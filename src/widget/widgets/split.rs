@@ -21,6 +21,7 @@ pub struct SplitLeaf {
     border: Option<&'static Border>,
     border_style: Style,
     title: Option<String>,
+    title_style: Option<Style>,
     draggable: bool,
 }
 
@@ -48,6 +49,12 @@ impl SplitLeaf {
     /// Sets (or clears) the title drawn on this leaf's top border.
     pub fn set_title(&mut self, title: Option<String>) {
         self.title = title;
+    }
+
+    /// Sets (or clears) a style for this leaf's title, independent of the
+    /// border style. When `None`, the title inherits the border style.
+    pub fn set_title_style(&mut self, style: Option<Style>) {
+        self.title_style = style;
     }
 }
 
@@ -1444,7 +1451,8 @@ impl SplitNode {
                         let title_x = child_offset.x;
                         let available = child.size.get()[Axis2D::X] as usize;
                         if title_y >= 0 && available >= 4 {
-                            ctx.set_style(base_style.apply(leaf.border_style));
+                            let title_style = leaf.title_style.unwrap_or(leaf.border_style);
+                            ctx.set_style(base_style.apply(title_style));
                             ctx.move_to(Vec2::new(title_x + 1, title_y));
                             let mut region = ctx.region(Vec2::new((available - 1) as u16, 1));
                             write!(region, " {} ", title);
@@ -1920,6 +1928,7 @@ pub struct SplitPaneChild {
     border: Option<&'static Border>,
     border_style: Style,
     title: Option<String>,
+    title_style: Option<Style>,
     draggable: bool,
     content: SplitPaneContent,
 }
@@ -1945,6 +1954,7 @@ impl SplitPaneChild {
                 border: self.border,
                 border_style: self.border_style,
                 title: self.title,
+                title_style: self.title_style,
                 draggable: self.draggable,
             },
             SplitPaneContent::Split { .. } => {
@@ -1959,6 +1969,7 @@ impl SplitPaneChild {
             border: leaf.border,
             border_style: leaf.border_style,
             title: leaf.title,
+            title_style: leaf.title_style,
             draggable: leaf.draggable,
             content: SplitPaneContent::Widget(leaf.widget),
         }
@@ -1975,6 +1986,7 @@ impl SplitPaneChild {
                         border: self.border,
                         border_style: self.border_style,
                         title: self.title,
+                        title_style: self.title_style,
                         draggable: self.draggable,
                     }),
                     size: Cell::new(Vec2::of(0)),
@@ -2009,6 +2021,7 @@ impl<T: Widget + 'static> From<Box<T>> for SplitPaneChild {
             border: None,
             border_style: Style::new(),
             title: None,
+            title_style: None,
             draggable: true,
             content: SplitPaneContent::Widget(w),
         }
@@ -2022,6 +2035,7 @@ impl From<Box<dyn Widget>> for SplitPaneChild {
             border: None,
             border_style: Style::new(),
             title: None,
+            title_style: None,
             draggable: true,
             content: SplitPaneContent::Widget(w),
         }
@@ -2035,6 +2049,7 @@ impl From<SplitPane> for SplitPaneChild {
             border: None,
             border_style: Style::new(),
             title: None,
+            title_style: None,
             draggable: true,
             content: SplitPaneContent::Split {
                 orientation: p.orientation,
