@@ -95,6 +95,12 @@ pub struct Text {
     overflow: &'static TextOverflow,
     align: Align,
     content: StyledString,
+    /// When `Some`, every grapheme is rendered as this character (repeated to
+    /// match the real grapheme's display width) instead of its true glyph —
+    /// used for password fields. The stored `content.text` stays the real
+    /// value, so editing, `get_string`, and all cursor/layout math are
+    /// unaffected; only `render` substitutes the glyphs.
+    mask: Option<char>,
 }
 
 impl Text {
@@ -301,7 +307,23 @@ impl Widget for Text {
                     for _ in 0..part.leftpad {
                         ctx.write(" ");
                     }
-                    ctx.write(part.content);
+                    match self.mask {
+                        // Replace each grapheme with the mask char repeated to
+                        // its display width so the masked render keeps the exact
+                        // column layout the (unchanged) cursor math expects.
+                        Some(mask) => {
+                            let mut masked = String::new();
+                            for grapheme in part.content.graphemes(true) {
+                                let width =
+                                    tuie::terminal_grapheme_width(grapheme) as usize;
+                                for _ in 0..width {
+                                    masked.push(mask);
+                                }
+                            }
+                            ctx.write(&masked);
+                        }
+                        None => ctx.write(part.content),
+                    }
                 }
                 col = tab_iter.col;
 
@@ -407,7 +429,24 @@ impl Text {
             overflow: TextOverflow::VISIBLE,
             align: Align::Start,
             content: StyledString::new(),
+            mask: None,
         })
+    }
+
+    /// Builder form of [`Text::set_mask`].
+    pub fn mask(mut self: Box<Self>, mask: char) -> Box<Self> {
+        self.set_mask(Some(mask));
+        self
+    }
+
+    /// Sets (or clears) the masking character. When `Some`, the content is
+    /// rendered as that character repeated to each grapheme's display width;
+    /// the underlying text is unchanged. Repaints on change.
+    pub fn set_mask(&mut self, mask: Option<char>) {
+        if self.mask != mask {
+            self.mask = mask;
+            self.dirty_paint();
+        }
     }
 
     /// Builder form of [`Text::set_content`].

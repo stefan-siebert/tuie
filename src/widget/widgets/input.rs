@@ -201,6 +201,19 @@ impl Input {
         self.dirty_layout();
     }
 
+    /// Builder form of [`Input::set_mask`].
+    pub fn mask(mut self: Box<Self>, mask: char) -> Box<Self> {
+        self.set_mask(Some(mask));
+        self
+    }
+
+    /// Sets (or clears) the masking character for password-style fields. The
+    /// stored value is unaffected; only the rendered glyphs are replaced. The
+    /// placeholder (shown while empty) is never masked.
+    pub fn set_mask(&mut self, mask: Option<char>) {
+        self.text.set_mask(mask);
+    }
+
     /// Selects the entire contents.
     pub fn select_all(&mut self) {
         self.editor.select_all(&*self.text);
