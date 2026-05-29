@@ -44,6 +44,11 @@ impl SplitLeaf {
     pub fn set_border_style(&mut self, style: Style) {
         self.border_style = style;
     }
+
+    /// Sets (or clears) the title drawn on this leaf's top border.
+    pub fn set_title(&mut self, title: Option<String>) {
+        self.title = title;
+    }
 }
 
 enum SplitNode {
