@@ -11,6 +11,7 @@ mod lab;
 mod list;
 mod modifiers;
 mod pane;
+mod popup;
 mod rgb;
 mod scrollbar;
 mod split;

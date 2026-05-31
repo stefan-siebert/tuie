@@ -325,10 +325,27 @@ fn drain_inbox(root: &mut dyn Widget) {
             return;
         }
         for (target, payload) in messages {
+            let payload: Box<dyn std::any::Any> = payload;
             if let Some(widget) = root.find_mut(target) {
-                let payload: Box<dyn std::any::Any> = payload;
                 let mut event = WidgetEvent::new(target, payload);
                 widget.on_event(&mut event);
+            } else {
+                // Not in the main tree — the target may live in an active popup
+                // (e.g. a host widget forwarding messages into a popup dialog it
+                // opened). Mirror `handle_state_change`'s root-then-popups
+                // search. Safe to dispatch while borrowing the runtime: widget
+                // callbacks reach the runtime only through the separate
+                // `RUNTIME_CTX` / popup / inbox queues, never `with_runtime_mut`.
+                with_runtime_mut(|rt| {
+                    let index =
+                        rt.popups.iter_mut().position(|p| p.content.find_mut(target).is_some());
+                    if let Some(i) = index {
+                        if let Some(widget) = rt.popups[i].content.find_mut(target) {
+                            let mut event = WidgetEvent::new(target, payload);
+                            widget.on_event(&mut event);
+                        }
+                    }
+                });
             }
         }
     }
@@ -1567,12 +1584,18 @@ impl Runtime {
         self.popups.iter().position(|p| p.content.get_id() == root_id)
     }
 
-    fn request_dismiss_popup(&mut self, root: &mut dyn Widget, index: usize) {
+    fn request_dismiss_popup(&mut self, _root: &mut dyn Widget, index: usize) {
+        // Deliver the dismiss request to the popup's own content. `focus_chain`
+        // here is the SAVED pre-popup app focus chain (used to restore focus on
+        // close), rooted at the app root — emitting along it would notify the
+        // app, not the popup. Address the content directly so the dialog that
+        // owns the popup can react (e.g. cancel itself), mirroring `Esc`.
         let popup = &mut self.popups[index];
         let popup_id = popup.content.get_id();
-        let saved_path = popup.focus_chain.clone();
-        WidgetPath::from_ids(saved_path)
-            .emit_event(root, &mut WidgetEvent::new(popup_id, Box::new(PopupDismissRequested)));
+        WidgetPath::from_ids(vec![popup_id]).emit_event(
+            &mut *popup.content,
+            &mut WidgetEvent::new(popup_id, Box::new(PopupDismissRequested)),
+        );
     }
 
     fn close_popup_at(&mut self, root: &mut dyn Widget, index: usize) {
