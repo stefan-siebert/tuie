@@ -113,6 +113,12 @@ crate::config_module!(ImageConfig {
     protocol: None,
 });
 
+/// The image protocol that would be auto-selected for the current terminal
+/// (honoring any forced override). Exposed for diagnostics and settings UIs.
+pub fn selected_protocol() -> ImageProtocol {
+    pick_protocol()
+}
+
 pub(crate) fn pick_protocol() -> ImageProtocol {
     if let Some(forced) = config::get().protocol {
         return forced;

@@ -110,7 +110,16 @@ impl Widget for Image {
     fn measure_constraints(&mut self) -> Constraints {
         let intrinsic = self.get_intrinsic_size(Vec2::of(u16::MAX));
         Constraints {
-            min_size: intrinsic,
+            // An image must be free to shrink: `layout_flow` aspect-fits to
+            // whatever it is allocated, so the natural size is only a preference,
+            // never a floor. Using the natural size as `min_size` made a flex
+            // image overflow (it cannot shrink below its min) whenever the
+            // natural cell size exceeded the viewport — which is *always* the
+            // case when cell-pixel size is unknown (e.g. VTE/GNOME Terminal
+            // reports no cell size, so the halfblock fallback treats every pixel
+            // as one cell). Explicit `.width()/.height()` still pin the size via
+            // the layout's own min/max.
+            min_size: Vec2::of(0),
             max_size: Vec2::of(u16::MAX),
             preferred_size: intrinsic,
         }
