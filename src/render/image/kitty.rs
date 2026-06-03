@@ -156,6 +156,9 @@ thread_local! {
     static SCRATCH: RefCell<String> = RefCell::new(String::with_capacity(512));
 }
 
+// Only the GUI present pass scans cells back to a source/placement (see
+// `gui::image_scan`); the terminal backends never reverse-map.
+#[cfg(feature = "gui")]
 pub(crate) fn lookup_source(image_id: u32) -> Option<Rc<SourceInner>> {
     IMAGE_SYSTEM.with_borrow(|sys| {
         if image_id & !ImageSystem::SLOT_MASK != sys.pid_high {
@@ -171,6 +174,7 @@ pub(crate) fn lookup_source(image_id: u32) -> Option<Rc<SourceInner>> {
     })
 }
 
+#[cfg(feature = "gui")]
 pub(crate) fn lookup_placement_size(source: &SourceInner, placement_id: u32) -> Option<Vec2<u16>> {
     source.with_kitty_cache(|cache| {
         cache
@@ -405,8 +409,13 @@ fn get_high_byte_diacritic(image_id: u32) -> Option<char> {
     }
 }
 
+// Placeholder glyph + diacritic→number decode are used only by the GUI
+// cell-scan path (`gui::image_scan`); the encode side (`DIACRITICS`) stays
+// always-compiled because the transmit path uses it.
+#[cfg(feature = "gui")]
 pub(crate) const PLACEHOLDER_CHAR: char = '\u{10EEEE}';
 
+#[cfg(feature = "gui")]
 pub(crate) fn diacritic_to_num(c: char) -> Option<u32> {
     DIACRITICS.iter().position(|&d| d == c).map(|i| (i + 1) as u32)
 }

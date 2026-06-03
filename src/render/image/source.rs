@@ -57,9 +57,12 @@ pub(super) struct SixelQuantized {
 }
 
 pub(crate) struct KittyCache {
-    pub pixel_slot: Option<Rc<PixelSlot>>,
-    pub placements: Vec<(Vec2<u16>, Rc<PlacementInner>)>,
-    pub decoded: Vec<(Vec2<u32>, AsyncEntry<Vec<u8>>)>,
+    // Visibility matches `PixelSlot` / `PlacementInner` (both `pub(super)`): the
+    // cache is `pub(crate)` for `SourceInner`, but these slot/placement handles
+    // never leave the image module, so the fields stay `pub(super)`.
+    pub(super) pixel_slot: Option<Rc<PixelSlot>>,
+    pub(super) placements: Vec<(Vec2<u16>, Rc<PlacementInner>)>,
+    pub(super) decoded: Vec<(Vec2<u32>, AsyncEntry<Vec<u8>>)>,
 }
 
 impl KittyCache {
@@ -92,7 +95,10 @@ pub(super) enum GraphicsCache {
 
 pub(crate) struct SourceInner {
     pub data: Arc<SourceData>,
-    pub cache: RefCell<Option<GraphicsCache>>,
+    // Private: the protocol caches are an implementation detail reached only
+    // through the `with_*_cache` accessors below, so `GraphicsCache` never
+    // escapes this module.
+    cache: RefCell<Option<GraphicsCache>>,
 }
 
 impl SourceInner {
