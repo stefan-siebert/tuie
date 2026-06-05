@@ -603,28 +603,32 @@ impl List {
 
     fn normalize_anchor(&mut self, viewport: i32) {
         let gap = self.gap.size as i32;
-        let Some(anchor_wi) = self.data_to_window(self.anchor.index) else {
-            return;
-        };
-        let anchor_height = self.item_height(anchor_wi) as i32;
-        if self.anchor.offset + anchor_height <= 0 {
-            let next = self.anchor.index + 1;
-            if next < self.len {
-                self.anchor = Anchor {
-                    index: next,
-                    offset: self.anchor.offset + anchor_height + gap,
-                };
-            }
-        } else if self.anchor.offset >= viewport {
-            if self.anchor.index > 0 {
-                let prev = self.anchor.index - 1;
-                if let Some(prev_wi) = self.data_to_window(prev) {
-                    let prev_height = self.item_height(prev_wi) as i32;
-                    self.anchor = Anchor {
-                        index: prev,
-                        offset: self.anchor.offset - prev_height - gap,
-                    };
+        // Walk the anchor index until its offset lands back inside [0, viewport).
+        // A single step only tracks ±1-row deltas; a page-sized `Delta` shifts the
+        // offset by ~viewport rows at once, so we must advance/retreat by as many
+        // items as the offset crossed — otherwise the index lags far behind the
+        // offset and the render window (centred on the index) drifts off the
+        // visible rows, leaving blank pages. Item heights outside the current
+        // window are estimated; fill()/layout re-derive exact offsets afterwards.
+        // Each iteration moves the index by one within [0, len), so this
+        // terminates.
+        loop {
+            let anchor_height = self.item_height_or_estimate(self.anchor.index) as i32;
+            if self.anchor.offset + anchor_height <= 0 {
+                if self.anchor.index + 1 >= self.len {
+                    break;
                 }
+                self.anchor.index += 1;
+                self.anchor.offset += anchor_height + gap;
+            } else if self.anchor.offset >= viewport {
+                if self.anchor.index == 0 {
+                    break;
+                }
+                self.anchor.index -= 1;
+                let prev_height = self.item_height_or_estimate(self.anchor.index) as i32;
+                self.anchor.offset -= prev_height + gap;
+            } else {
+                break;
             }
         }
     }

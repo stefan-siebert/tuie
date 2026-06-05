@@ -52,6 +52,31 @@ fn scroll_method_advances_view() {
 }
 
 #[test]
+fn repeated_page_scroll_keeps_viewport_filled() {
+    // Regression: a page-sized `scroll_by` shifts the anchor offset by ~viewport
+    // rows at once, so the anchor index must advance by that many items too. A
+    // one-step anchor normalization left the index lagging the offset; the render
+    // window (centred on the index) then drifted off the visible rows and pages
+    // came up blank after enough scrolling (the hex viewer's "blank after the
+    // 0xcf0 row" bug). Page far down and assert every visible line still renders.
+    let mut list = make_list(2000);
+    let mut term = TestTerminal::new(&mut *list, Vec2::new(10, 5));
+    for _ in 0..30 {
+        list.scroll_by(5); // page = viewport height
+        term.update(&mut *list, &[RuntimeEvent::Resize(Vec2::new(10, 5))]);
+    }
+    // 30 pages × 5 rows = row 150 at the top; no blank rows, correct position.
+    assert_eq!(list.get_visible_range().start, 150, "top row after 30 pages");
+    term.assert_lines([
+        "item 150  ",
+        "item 151  ",
+        "item 152  ",
+        "item 153  ",
+        "item 154  ",
+    ]);
+}
+
+#[test]
 fn mouse_scroll_down_advances_view() {
     let mut list = make_list(20);
     let mut term = TestTerminal::new(&mut *list, Vec2::new(8, 3));
