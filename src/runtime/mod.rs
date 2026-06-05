@@ -29,8 +29,19 @@ use std::{
 /// Kitty keyboard enhancement flags.
 const KBD_FLAGS: u8 = 0b0000_0101;
 
+#[cfg(unix)]
 static WAKER: std::sync::OnceLock<(std::os::unix::net::UnixStream, std::os::unix::net::UnixStream)> =
     std::sync::OnceLock::new();
+
+/// Windows runtime waker: a single auto-reset event signalled by [`poke_waker`]
+/// and waited on by the reader, mirroring the Unix self-pipe.
+#[cfg(windows)]
+struct WindowsWaker {
+    event: std::os::windows::io::OwnedHandle,
+}
+
+#[cfg(windows)]
+static WAKER: std::sync::OnceLock<WindowsWaker> = std::sync::OnceLock::new();
 
 /// Cross-thread / signal-handler control flags drained on each runtime tick.
 struct ControlFlags {
@@ -58,7 +69,8 @@ impl ControlFlags {
 static CONTROL: ControlFlags = ControlFlags::new();
 
 /// Initializes the wake pipe and returns its read-end fd.
-fn init_waker() -> std::io::Result<std::os::unix::io::RawFd> {
+#[cfg(unix)]
+fn init_waker() -> std::io::Result<crate::ansi::WakeHandle> {
     use std::os::unix::io::AsRawFd;
     let waker = WAKER.get_or_init(|| {
         let (read, write) = std::os::unix::net::UnixStream::pair().expect("wake pipe");
@@ -70,15 +82,57 @@ fn init_waker() -> std::io::Result<std::os::unix::io::RawFd> {
 }
 
 /// Returns the write end of the wake pipe.
+#[cfg(unix)]
 fn waker_write() -> Option<&'static std::os::unix::net::UnixStream> {
     WAKER.get().map(|(_, write)| write)
 }
 
-/// Writes one byte to the wake pipe.
+/// Initializes the wake event and returns its handle for the reader's wait set.
+#[cfg(windows)]
+fn init_waker() -> std::io::Result<crate::ansi::WakeHandle> {
+    use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle, RawHandle};
+    let waker = WAKER.get_or_init(|| {
+        // SAFETY: CreateEventW returns a fresh owned auto-reset event handle.
+        let handle = unsafe {
+            windows_sys::Win32::System::Threading::CreateEventW(
+                std::ptr::null(), // default security attributes
+                0,                // bManualReset = FALSE (auto-reset)
+                0,                // bInitialState = FALSE
+                std::ptr::null(), // unnamed
+            )
+        };
+        assert!(!handle.is_null(), "CreateEventW failed for runtime waker");
+        // SAFETY: we own the freshly created handle.
+        let event = unsafe { OwnedHandle::from_raw_handle(handle as RawHandle) };
+        WindowsWaker { event }
+    });
+    Ok(waker.event.as_raw_handle())
+}
+
+/// Returns the wake event handle wrapper.
+#[cfg(windows)]
+fn waker_write() -> Option<&'static std::os::windows::io::OwnedHandle> {
+    WAKER.get().map(|w| &w.event)
+}
+
+/// Signals the runtime waker.
 fn poke_waker() {
-    use std::io::Write as _;
-    if let Some(write) = waker_write() {
-        let _ = (&mut &*write).write(&[0u8]);
+    #[cfg(unix)]
+    {
+        use std::io::Write as _;
+        if let Some(write) = waker_write() {
+            let _ = (&mut &*write).write(&[0u8]);
+        }
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawHandle;
+        if let Some(event) = waker_write() {
+            // SAFETY: signalling a valid, owned auto-reset event.
+            unsafe {
+                windows_sys::Win32::System::Threading::SetEvent(event.as_raw_handle() as _);
+            }
+        }
     }
 }
 
@@ -419,6 +473,7 @@ pub(crate) fn sync_gui_grid_size(cells: Vec2<u16>, cell_px: Vec2<u16>) {
     });
 }
 
+#[cfg(unix)]
 fn physical_cell_px() -> Option<Vec2<u16>> {
     let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
     let rc = unsafe { libc::ioctl(libc::STDIN_FILENO, libc::TIOCGWINSZ, &mut ws) };
@@ -426,6 +481,14 @@ fn physical_cell_px() -> Option<Vec2<u16>> {
         return None;
     }
     Some(Vec2::new(ws.ws_xpixel / ws.ws_col, ws.ws_ypixel / ws.ws_row))
+}
+
+/// The Windows console exposes no per-cell pixel size via a local API; pixel
+/// dimensions instead come from the VT `QueryCellPixelSize` / `QueryWindowPixelSize`
+/// replies (in terminals that answer them), handled by the capability queries.
+#[cfg(windows)]
+fn physical_cell_px() -> Option<Vec2<u16>> {
+    None
 }
 
 /// Returns the [`FocusedMeasure`] for the focused widget.
@@ -1551,8 +1614,13 @@ impl Runtime {
     }
 
     fn suspend(&mut self) -> std::io::Result<()> {
-        if cfg!(not(windows)) {
+        // Job-control suspend (Ctrl-Z / SIGTSTP) has no Windows equivalent; the
+        // `#[cfg]` attribute (not the `cfg!` macro) keeps the libc call out of
+        // the Windows build entirely.
+        #[cfg(not(windows))]
+        {
             self.disable()?;
+            // SAFETY: sending SIGSTOP to our own process group has no preconditions.
             unsafe {
                 libc::kill(0, libc::SIGSTOP);
             }

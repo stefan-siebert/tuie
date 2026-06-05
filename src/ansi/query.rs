@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use super::{ColorScheme, ColorType, ParsedEvent};
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use super::{write_query, Reader};
 
 /// A terminal capability query issued via [`QueryBatch`].
@@ -84,7 +84,7 @@ impl QueryBatch {
     }
 
     /// Sends all queries and collects their replies.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub fn execute(self) -> io::Result<QueryResults> {
         let mut reader = Reader::for_query()?;
 

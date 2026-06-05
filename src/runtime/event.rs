@@ -2,7 +2,7 @@
 
 use crate::prelude::*;
 use crate::ansi;
-use std::os::unix::io::RawFd;
+use crate::ansi::WakeHandle;
 use std::time::{Duration, Instant};
 
 /// Terminal background brightness reported by the host.
@@ -106,8 +106,8 @@ impl RuntimeEventReader {
         })
     }
 
-    /// Adds the runtime wake pipe to the reader's poll set.
-    pub(crate) fn set_wake_fd(&mut self, fd: RawFd) {
+    /// Adds the runtime wake handle to the reader's poll set.
+    pub(crate) fn set_wake_fd(&mut self, fd: WakeHandle) {
         self.reader.set_wake_fd(fd);
     }
 
