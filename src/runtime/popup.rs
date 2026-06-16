@@ -184,10 +184,63 @@ pub(crate) fn resolve_placement(
     })
 }
 
+/// Shift a resolved popup position so the popup stays within the window when it
+/// can: if it would overflow the far (right/bottom) edge, pull it back so its far
+/// edge meets the window edge; never push its near edge past the origin. A popup
+/// larger than the window is pinned to the top-left so its top-left stays visible
+/// (the overflow is clipped at the far edge rather than hidden off the near one).
+///
+/// Without this, an anchored popup placed near the right/bottom edge — e.g. a
+/// right-click context menu opened low in a panel — renders partly off-screen.
+fn clamp_to_window(pos: Vec2<i32>, popup_size: Vec2<u16>, window_size: Vec2<u16>) -> Vec2<i32> {
+    Axis2D::map(|a| {
+        let size = popup_size[a] as i32;
+        let window = window_size[a] as i32;
+        pos[a].min(window - size).max(0)
+    })
+}
+
 pub(crate) fn position_popup(popup: &mut ActivePopup, window_size: Vec2<u16>) {
     let window_rect = Rect::new(Vec2::of(0i32), window_size);
-    let pos = resolve_placement(&popup.placement, window_rect, popup.content.get_outer_size());
+    let popup_size = popup.content.get_outer_size();
+    let pos = resolve_placement(&popup.placement, window_rect, popup_size);
+    let pos = clamp_to_window(pos, popup_size, window_size);
     let margin_before = popup.content.get_layout().get_margin_before().map(|v| v as i32);
     popup.content.set_pos(pos + margin_before);
     popup.content.layout_position();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fully_visible_popup_is_unchanged() {
+        let pos = clamp_to_window(Vec2::new(5, 3), Vec2::new(20, 10), Vec2::new(80, 24));
+        assert_eq!((pos.x, pos.y), (5, 3));
+    }
+
+    #[test]
+    fn popup_overflowing_bottom_is_pulled_up() {
+        // A 20x10 popup at y=20 in a 24-row window would reach row 30 → pulled up
+        // so its bottom meets the window edge (24 - 10 = 14).
+        let pos = clamp_to_window(Vec2::new(5, 20), Vec2::new(20, 10), Vec2::new(80, 24));
+        assert_eq!((pos.x, pos.y), (5, 14));
+    }
+
+    #[test]
+    fn popup_overflowing_right_is_pulled_left() {
+        // A 30-wide popup at x=70 in an 80-col window would reach col 100 → pulled
+        // left so its right edge meets the window edge (80 - 30 = 50).
+        let pos = clamp_to_window(Vec2::new(70, 2), Vec2::new(30, 5), Vec2::new(80, 24));
+        assert_eq!((pos.x, pos.y), (50, 2));
+    }
+
+    #[test]
+    fn popup_larger_than_window_pins_to_origin() {
+        // A 30-row popup in a 24-row window can't fit; pin to the top so its
+        // top-left stays visible rather than scrolling off the near edge.
+        let pos = clamp_to_window(Vec2::new(2, 5), Vec2::new(20, 30), Vec2::new(80, 24));
+        assert_eq!((pos.x, pos.y), (2, 0));
+    }
 }
