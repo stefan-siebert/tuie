@@ -2702,15 +2702,11 @@ impl Runtime {
             renderer.render_to_queue(root, Vec2::of(0i32), buffer);
             seed_popup_queue(renderer, buffer, popups);
             renderer.drain_queue(buffer);
-            renderer.flush(buffer)?;
+            let wrote = renderer.flush(buffer)?;
 
             buf.clear();
             output::end_synchronized_update(buf);
 
-            let (mut was_visible, last_style) =
-                with_ctx(|ctx| (ctx.cursor_visible, ctx.last_cursor_style));
-            let mut cursor_visible = false;
-            let mut new_style = last_style;
             let in_grid = |pos: Vec2<i32>| {
                 pos.x >= 0
                     && pos.y >= 0
@@ -2718,36 +2714,49 @@ impl Runtime {
                     && pos.y < term_size.y as i32
             };
             let visible_cursor = cursor.filter(|(_, p)| in_grid(*p));
-            if let Some((shape, pos)) = visible_cursor {
-                output::move_to(buf, pos.x as u16, pos.y as u16);
-                cursor_visible = true;
-                if !was_visible {
-                    was_visible = true;
-                    output::show_cursor(buf);
-                }
-                // Only (re-)emit DECSCUSR when the shape/blink actually changes.
-                // Most terminals restart the cursor blink phase on every set, so
-                // emitting it each frame (e.g. once per repaint while the mouse
-                // moves) makes the blink look frantic.
-                let style = (shape, config::get().cursor_blink);
-                if last_style != Some(style) {
-                    output::set_cursor_style(buf, style.0, style.1);
-                    new_style = Some(style);
-                }
-            }
+            let prev_cursor = with_ctx(|ctx| ctx.emulator_cursor);
 
-            if !cursor_visible {
-                output::move_to(buf, 0, 0);
-                if was_visible {
-                    was_visible = false;
-                    output::hide_cursor(buf);
+            // Only touch the terminal cursor when the grid actually changed
+            // (which moved the hardware cursor as a side effect of writing
+            // cells) or when the cursor itself moved / appeared / vanished. On a
+            // no-op repaint — e.g. the app's periodic tick re-rendering identical
+            // content — we leave the cursor exactly where it is so the terminal's
+            // hardware blink keeps its cadence instead of restarting every frame.
+            let cursor_touched = wrote || visible_cursor != prev_cursor;
+            if cursor_touched {
+                let (mut was_visible, last_style) =
+                    with_ctx(|ctx| (ctx.cursor_visible, ctx.last_cursor_style));
+                let mut cursor_visible = false;
+                let mut new_style = last_style;
+                if let Some((shape, pos)) = visible_cursor {
+                    output::move_to(buf, pos.x as u16, pos.y as u16);
+                    cursor_visible = true;
+                    if !was_visible {
+                        was_visible = true;
+                        output::show_cursor(buf);
+                    }
+                    // Only (re-)emit DECSCUSR when shape/blink actually changes;
+                    // many terminals restart the blink phase on every set.
+                    let style = (shape, config::get().cursor_blink);
+                    if last_style != Some(style) {
+                        output::set_cursor_style(buf, style.0, style.1);
+                        new_style = Some(style);
+                    }
                 }
+
+                if !cursor_visible {
+                    output::move_to(buf, 0, 0);
+                    if was_visible {
+                        was_visible = false;
+                        output::hide_cursor(buf);
+                    }
+                }
+                with_ctx_mut(|ctx| {
+                    ctx.cursor_visible = was_visible;
+                    ctx.emulator_cursor = visible_cursor;
+                    ctx.last_cursor_style = new_style;
+                });
             }
-            with_ctx_mut(|ctx| {
-                ctx.cursor_visible = was_visible;
-                ctx.emulator_cursor = visible_cursor;
-                ctx.last_cursor_style = new_style;
-            });
             buffer.write_all(buf.as_bytes())?;
             buffer.flush()?;
             Ok(())

@@ -761,10 +761,16 @@ impl GridRendererState {
         }
     }
 
-    fn render_with<E: Emitter>(&mut self, emit: &mut E) -> std::io::Result<()> {
+    /// Diffs `cells` against the previous frame and emits escapes for changed
+    /// cells. Returns `true` if anything that moves or paints the screen was
+    /// emitted — callers use this to avoid disturbing the terminal cursor (and
+    /// its blink) on a no-op repaint.
+    fn render_with<E: Emitter>(&mut self, emit: &mut E) -> std::io::Result<bool> {
+        let mut emitted = false;
         if self.full_dirty {
             self.full_dirty = false;
             emit.full_clear()?;
+            emitted = true;
         }
         let mut i = 0;
         let cells = &self.cells.0;
@@ -820,6 +826,7 @@ impl GridRendererState {
                     }
                     emit.print(glyph)?;
                     current_line = y;
+                    emitted = true;
                 } else {
                     should_move = true;
                 }
@@ -847,7 +854,7 @@ impl GridRendererState {
         }
         emit.reset()?;
 
-        Ok(())
+        Ok(emitted)
     }
 }
 
@@ -975,8 +982,10 @@ impl GridRenderer {
         }
     }
 
-    /// Diffs the cell buffers and writes ANSI escapes to `buffer`.
-    pub fn flush(&mut self, buffer: &mut dyn Write) -> std::io::Result<()> {
+    /// Diffs the cell buffers and writes ANSI escapes to `buffer`. Returns
+    /// `true` if any screen-touching escape was emitted (so the caller can skip
+    /// disturbing the terminal cursor on a no-op repaint).
+    pub fn flush(&mut self, buffer: &mut dyn Write) -> std::io::Result<bool> {
         let mut buf = std::mem::take(&mut self.state.fmt_buf);
         let mut emitter = AnsiEmitter::new(&mut buf);
         let r = self.state.render_with(&mut emitter);
