@@ -984,6 +984,7 @@ pub(crate) fn update(
     for event in events {
         match event {
             RuntimeEvent::Suspend => {
+                log::debug!("tui: suspend");
                 with_ctx_mut(|ctx| ctx.suspend())?;
                 dirty_layout();
             }
@@ -1411,6 +1412,7 @@ impl RuntimeContext {
     }
 
     fn enable_after_hook_terminal(&mut self) -> std::io::Result<()> {
+        log::debug!("tui: entering terminal (raw mode, alt screen)");
         ansi::enable_raw_mode()?;
         // (Re-)entering the terminal leaves the cursor at its default style;
         // force the next paint to emit DECSCUSR rather than trusting the cache.
@@ -1479,6 +1481,14 @@ impl RuntimeContext {
                         crate::theme::harmonious::apply_palette(palette);
                     }
                 }
+
+                log::debug!(
+                    "tui ready: size={:?} cell_size={:?} subcell_events={} xtversion={:?}",
+                    (info.size.x, info.size.y),
+                    info.cell_size,
+                    info.subcell_events,
+                    info.xtversion,
+                );
 
                 #[cfg(all(unix, feature = "images"))]
                 crate::render::image::shm::unlink_probe();
@@ -1552,6 +1562,7 @@ impl RuntimeContext {
     }
 
     fn disable_terminal(&mut self) -> std::io::Result<()> {
+        log::debug!("tui: leaving terminal (restoring cursor / screen)");
         if let Some(old) = self.panic_hook.lock().unwrap().take() {
             std::panic::set_hook(old);
         }
@@ -1641,6 +1652,7 @@ impl Runtime {
     }
 
     fn close_popup_at(&mut self, root: &mut dyn Widget, index: usize) {
+        log::debug!("popup closed: index={}", index);
         let removed = self.popups.remove(index);
         let popup_id = removed.content.get_id();
         WidgetPath::from_ids(removed.focus_chain.clone())
@@ -2767,6 +2779,7 @@ impl Runtime {
         for popup in crate::runtime::popup::drain_open_requests() {
             let saved = self.deselect_current(root);
             let content_id = popup.content.get_id();
+            log::debug!("popup opened: id={:?}", content_id);
             let active = crate::runtime::popup::ActivePopup::from_popup(popup, saved);
             let mut path = vec![content_id];
             find_focusable_1d(&*active.content, &[], Sign::Positive, &mut path);

@@ -590,6 +590,7 @@ mod windows {
         let cols = (info.srWindow.Right - info.srWindow.Left + 1).max(0) as u16;
         let rows = (info.srWindow.Bottom - info.srWindow.Top + 1).max(0) as u16;
         if cols == 0 {
+            log::warn!("size(): console reported zero width");
             return Err(io::Error::new(io::ErrorKind::Other, "console reported zero width"));
         }
         Ok((cols, rows))
@@ -597,13 +598,17 @@ mod windows {
 
     /// Writes terminal query bytes to the console output.
     pub fn write_query(bytes: &[u8]) -> io::Result<()> {
-        if let Ok(mut conout) = std::fs::OpenOptions::new().write(true).open("CONOUT$") {
-            conout.write_all(bytes)?;
-            conout.flush()
-        } else {
-            let mut out = io::stdout();
-            out.write_all(bytes)?;
-            out.flush()
+        match std::fs::OpenOptions::new().write(true).open("CONOUT$") {
+            Ok(mut conout) => {
+                conout.write_all(bytes)?;
+                conout.flush()
+            }
+            Err(err) => {
+                log::warn!("write_query: failed to open CONOUT$: {err}");
+                let mut out = io::stdout();
+                out.write_all(bytes)?;
+                out.flush()
+            }
         }
     }
 
