@@ -123,6 +123,7 @@ impl RuntimeEventReader {
                     out.push(tui_event);
                 }
             }
+            coalesce_motion(&mut out);
             if !out.is_empty() || woken || timeout.is_some() {
                 return Ok((out, woken));
             }
@@ -222,5 +223,120 @@ impl RuntimeEventReader {
             E::ColorScheme(scheme) => Some(RuntimeEvent::ColorSchemeChange(scheme)),
             _ => None,
         }
+    }
+}
+
+/// Collapses runs of consecutive mouse-motion events (hover, drag) to the most
+/// recent one in the batch.
+///
+/// Pixel-resolution mouse reporting (DEC mode 1016) emits a motion event for
+/// every *pixel* of movement, not every cell. Only the final position matters
+/// for hover highlighting and drag tracking, so keeping just the last event of
+/// each consecutive run removes a 100-200x flood — and the per-event tree
+/// hit-tests and repaints it would trigger — without losing precision on
+/// presses / releases or the resting position. Events of other kinds (keys,
+/// clicks, paste, resize) break a run and are always preserved.
+fn coalesce_motion(events: &mut Vec<RuntimeEvent>) {
+    fn motion_kind(event: &RuntimeEvent) -> Option<u8> {
+        match event {
+            RuntimeEvent::Input(input) => match input.chord.trigger {
+                Trigger::MouseHover => Some(0),
+                Trigger::MouseDrag(_) => Some(1),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    let mut write = 0usize;
+    for read in 0..events.len() {
+        if write > 0 {
+            let prev = motion_kind(&events[write - 1]);
+            if prev.is_some() && prev == motion_kind(&events[read]) {
+                // Same motion kind as the previously kept event: overwrite it
+                // with the newer one so only the latest position survives.
+                events.swap(write - 1, read);
+                continue;
+            }
+        }
+        events.swap(write, read);
+        write += 1;
+    }
+    events.truncate(write);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ev(trigger: Trigger, x: f32) -> RuntimeEvent {
+        let mut input = InputEvent::from_chord(Chord::new(trigger, Modifiers::new()));
+        input.pos = Vec2::new(x, 0.0);
+        RuntimeEvent::Input(input)
+    }
+
+    fn xs(events: &[RuntimeEvent]) -> Vec<(Option<u8>, i32)> {
+        events
+            .iter()
+            .map(|e| match e {
+                RuntimeEvent::Input(i) => {
+                    let kind = match i.chord.trigger {
+                        Trigger::MouseHover => Some(0),
+                        Trigger::MouseDrag(_) => Some(1),
+                        _ => Some(9),
+                    };
+                    (kind, i.pos.x as i32)
+                }
+                _ => (None, -1),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn collapses_consecutive_hovers_to_last() {
+        let mut events = vec![
+            ev(Trigger::MouseHover, 1.0),
+            ev(Trigger::MouseHover, 2.0),
+            ev(Trigger::MouseHover, 3.0),
+        ];
+        coalesce_motion(&mut events);
+        assert_eq!(xs(&events), vec![(Some(0), 3)]);
+    }
+
+    #[test]
+    fn preserves_clicks_between_and_around_motion() {
+        let click = || ev(Trigger::MouseDown(MouseButton::Left), 5.0);
+        let mut events = vec![
+            ev(Trigger::MouseHover, 1.0),
+            ev(Trigger::MouseHover, 2.0),
+            click(),
+            ev(Trigger::MouseHover, 7.0),
+            ev(Trigger::MouseHover, 8.0),
+        ];
+        coalesce_motion(&mut events);
+        // last-of-first-run, the click, last-of-second-run
+        assert_eq!(xs(&events), vec![(Some(0), 2), (Some(9), 5), (Some(0), 8)]);
+    }
+
+    #[test]
+    fn does_not_merge_different_motion_kinds() {
+        let mut events = vec![
+            ev(Trigger::MouseHover, 1.0),
+            ev(Trigger::MouseDrag(MouseButton::Left), 2.0),
+            ev(Trigger::MouseDrag(MouseButton::Left), 3.0),
+        ];
+        coalesce_motion(&mut events);
+        assert_eq!(xs(&events), vec![(Some(0), 1), (Some(1), 3)]);
+    }
+
+    #[test]
+    fn leaves_non_motion_batches_untouched() {
+        let mut events = vec![
+            ev(Trigger::MouseDown(MouseButton::Left), 1.0),
+            ev(Trigger::MouseUp(MouseButton::Left), 1.0),
+        ];
+        let before = xs(&events);
+        coalesce_motion(&mut events);
+        assert_eq!(xs(&events), before);
     }
 }

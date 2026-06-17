@@ -332,6 +332,11 @@ struct RuntimeContext {
     terminal_initialized: bool,
     cursor_visible: bool,
     emulator_cursor: Option<(CursorShape, Vec2<i32>)>,
+    /// Last DECSCUSR (shape, blink) emitted to the terminal. Re-emitting it on
+    /// every frame makes terminals restart the cursor blink phase, so we only
+    /// send it when it actually changes. `None` means "unknown / reset" — the
+    /// next paint will (re-)emit it.
+    last_cursor_style: Option<(CursorShape, bool)>,
     buf: String,
     mouse_pixel_dpr: Option<Vec2<u8>>,
 }
@@ -364,6 +369,7 @@ impl RuntimeContext {
             terminal_initialized: false,
             cursor_visible: true,
             emulator_cursor: None,
+            last_cursor_style: None,
             buf: String::new(),
             mouse_pixel_dpr: None,
         }
@@ -1406,6 +1412,9 @@ impl RuntimeContext {
 
     fn enable_after_hook_terminal(&mut self) -> std::io::Result<()> {
         ansi::enable_raw_mode()?;
+        // (Re-)entering the terminal leaves the cursor at its default style;
+        // force the next paint to emit DECSCUSR rather than trusting the cache.
+        self.last_cursor_style = None;
         let initial_size: Vec2<u16> = ansi::size()?.into();
 
         if !std::mem::replace(&mut self.terminal_initialized, true) {
@@ -1553,6 +1562,7 @@ impl RuntimeContext {
         output::reset_cursor_style(&mut self.buf);
         output::show_cursor(&mut self.buf);
         self.cursor_visible = true;
+        self.last_cursor_style = None;
         output::leave_alternate_screen(&mut self.buf);
         output::pop_keyboard_enhancement_flags(&mut self.buf);
         let pixel_mouse = self
@@ -2697,8 +2707,10 @@ impl Runtime {
             buf.clear();
             output::end_synchronized_update(buf);
 
-            let mut was_visible = with_ctx(|ctx| ctx.cursor_visible);
+            let (mut was_visible, last_style) =
+                with_ctx(|ctx| (ctx.cursor_visible, ctx.last_cursor_style));
             let mut cursor_visible = false;
+            let mut new_style = last_style;
             let in_grid = |pos: Vec2<i32>| {
                 pos.x >= 0
                     && pos.y >= 0
@@ -2713,7 +2725,15 @@ impl Runtime {
                     was_visible = true;
                     output::show_cursor(buf);
                 }
-                output::set_cursor_style(buf, shape, config::get().cursor_blink);
+                // Only (re-)emit DECSCUSR when the shape/blink actually changes.
+                // Most terminals restart the cursor blink phase on every set, so
+                // emitting it each frame (e.g. once per repaint while the mouse
+                // moves) makes the blink look frantic.
+                let style = (shape, config::get().cursor_blink);
+                if last_style != Some(style) {
+                    output::set_cursor_style(buf, style.0, style.1);
+                    new_style = Some(style);
+                }
             }
 
             if !cursor_visible {
@@ -2726,6 +2746,7 @@ impl Runtime {
             with_ctx_mut(|ctx| {
                 ctx.cursor_visible = was_visible;
                 ctx.emulator_cursor = visible_cursor;
+                ctx.last_cursor_style = new_style;
             });
             buffer.write_all(buf.as_bytes())?;
             buffer.flush()?;
