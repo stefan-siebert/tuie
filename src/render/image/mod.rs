@@ -82,6 +82,7 @@ impl ImageSource {
 
 /// Image rendering backend selection.
 #[derive(Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ImageProtocol {
     /// Sixel DCS payload backend.
     Sixel,
@@ -104,6 +105,7 @@ impl std::fmt::Display for ImageProtocol {
 
 /// Default configuration for all [`Image`](crate::widget::widgets::image::Image) widgets.
 #[derive(Clone, Copy)]
+#[non_exhaustive]
 pub struct ImageConfig {
     /// The forced backend, or `None` to auto-select.
     pub protocol: Option<ImageProtocol>,
@@ -124,7 +126,7 @@ pub(crate) fn pick_protocol() -> ImageProtocol {
         return forced;
     }
     let caps = crate::runtime::get_image_caps();
-    if crate::runtime::is_gui() {
+    if crate::is_gui() {
         ImageProtocol::Kitty
     } else if caps.supports_sixel {
         ImageProtocol::Sixel
@@ -144,11 +146,6 @@ pub(crate) fn prepare(source: &ImageSource, placement_size: Vec2<u16>, fill: boo
         ImageProtocol::Kitty => kitty::prepare(source, placement_size, fill),
         ImageProtocol::HalfBlock => halfblock::prepare(source, placement_size, fill),
     }
-}
-
-#[cfg(feature = "gui")]
-pub(crate) fn lookup_source(image_id: u32) -> Option<ImageSource> {
-    kitty::lookup_source(image_id).map(|inner| ImageSource { inner })
 }
 
 pub(crate) fn dispatch(ctx: &mut RenderContext, source: &ImageSource, fill: bool) {

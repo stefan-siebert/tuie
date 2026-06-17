@@ -3,10 +3,9 @@
 use crate::prelude::*;
 use crate::widget::chrome::ChromeHost;
 use crate::widget::align::{AlignSpec, FlexAlign, Place};
-use crate::widget::{get_flow_output_size_layout, get_flow_output_size_measure};
+use crate::widget::{flow_output_size, measure_output_size};
 use crate::util::stack_pool::StackPool;
-use crate::widget::flex::{self, AsFlexItem, FlexItem};
-use crate::widget::scrollbar::{corner_extension, progress_from_subcell, scrollbar_input, scrollbar_render_smooth, subcell_from_progress};
+use crate::widget::flex::{self, FlexItem};
 use chord_macro::chord;
 use sign::Directional;
 
@@ -16,39 +15,35 @@ thread_local! {
 
 #[derive(Clone, Copy)]
 struct Slot {
-    item: FlexItem,
     measured: Vec2<u16>,
     commit: Vec2<u16>,
 }
 
 impl Slot {
     const EMPTY: Self = Self {
-        item: FlexItem::new(0, 0, 0, 0),
         measured: Vec2::of(0),
         commit: Vec2::of(0),
     };
 }
 
-impl AsFlexItem for Slot {
-    fn flex_item(&self) -> &FlexItem { &self.item }
-    fn flex_item_mut(&mut self) -> &mut FlexItem { &mut self.item }
-}
-
 #[derive(Default)]
 struct FlexState {
     slots: Vec<Slot>,
+    items: Vec<FlexItem>,
 }
 
 impl FlexState {
     fn resize_to(&mut self, n: usize) {
         self.slots.clear();
         self.slots.resize(n, Slot::EMPTY);
+        self.items.clear();
+        self.items.resize(n, FlexItem::new(0, 0, 0, 0));
     }
 }
 
 struct ScrollConfig {
     scroll: Vec2<u32>,
-    subcell_scroll: Vec2<u16>,
+    subcell_scroll: Vec2<f32>,
     mode: Vec2<Option<Scrollbar>>,
     scrollbar: Vec2<ScrollbarState>,
     style: ScrollbarStyle,
@@ -58,7 +53,7 @@ impl ScrollConfig {
     fn new() -> Self {
         Self {
             scroll: Vec2::of(0),
-            subcell_scroll: Vec2::of(0),
+            subcell_scroll: Vec2::of(0.0),
             mode: Vec2::of(None),
             scrollbar: Vec2::new(ScrollbarState::new(), ScrollbarState::new()),
             style: ScrollbarStyle::new(),
@@ -67,7 +62,7 @@ impl ScrollConfig {
 }
 
 struct WrapConfig {
-    balanced: bool,
+    mode: FlexWrap,
     cross_gap: u8,
     line_starts: Vec<usize>,
     resolved_size: Vec2<u16>,
@@ -76,7 +71,7 @@ struct WrapConfig {
 impl Default for WrapConfig {
     fn default() -> Self {
         Self {
-            balanced: false,
+            mode: FlexWrap::Greedy,
             cross_gap: 0,
             line_starts: Vec::new(),
             resolved_size: Vec2::of(0),
@@ -227,7 +222,7 @@ impl Pane {
     }
 
     fn get_children_extent(&self) -> Vec2<u32> {
-        if let Some(w) = self.get_wrap() {
+        if let Some(w) = self.get_wrap_cfg() {
             return Axis2D::map(|a| w.resolved_size[a] as u32);
         }
         let axis = self.orientation;
@@ -280,8 +275,7 @@ impl Pane {
                 1.0
             };
             let max_scroll = content_size.saturating_sub(viewport[a] as u32);
-            let cell_px = crate::runtime::cell_px_along(a);
-            let progress = progress_from_subcell(sc.scroll[a], sc.subcell_scroll[a], max_scroll, cell_px);
+            let progress = ScrollbarState::progress_from_subcell(sc.scroll[a], sc.subcell_scroll[a], max_scroll);
             let bar = &mut sc.scrollbar[a];
             bar.set_ratio(ratio);
             bar.set_progress(progress);
@@ -378,17 +372,26 @@ impl Pane {
         })
     }
 
+    fn get_subcell_offset(&self) -> Vec2<f32> {
+        if !crate::is_gui() {
+            return Vec2::of(0.0);
+        }
+        let Some(sc) = self.scroll.as_deref() else {
+            return Vec2::of(0.0);
+        };
+        Axis2D::map(|a| -sc.subcell_scroll[a])
+    }
+
     fn handle_scrollbar_input(
         &mut self,
         chord: &Chord,
-        mouse_pos: Vec2<i32>,
-        mouse_subpx: Vec2<i32>,
+        mouse_pos: Vec2<f32>,
         filter: impl Fn(&ScrollbarState, Axis2D, Vec2<i32>, Vec2<u16>, bool, u16, u16) -> bool,
     ) -> bool {
         let border = self.get_border_offset();
         let viewport = self.get_viewport_size();
-        let local = mouse_pos - border;
-        let cell_px = Axis2D::map(|a| crate::runtime::cell_px_along(a) as i32);
+        let local = mouse_pos - border.map(|v| v as f32);
+        let local_cell = Axis2D::map(|a| local[a].floor() as i32);
         let insets = self.insets;
 
         let mut handled = None;
@@ -397,7 +400,7 @@ impl Pane {
             for a in [Axis2D::X, Axis2D::Y] {
                 let inset_before = insets.get_before(a) as u16;
                 let inset_after = insets.get_after(a) as u16;
-                if !filter(&sc.scrollbar[a], a, local, viewport, has_both, inset_before, inset_after) {
+                if !filter(&sc.scrollbar[a], a, local_cell, viewport, has_both, inset_before, inset_after) {
                     continue;
                 }
                 let base = if a == Axis2D::Y && has_both {
@@ -410,14 +413,10 @@ impl Pane {
                 if !is_release && size <= 0.0 {
                     continue;
                 }
-                let mouse_offset = local[a] - inset_before as i32;
-                let result = scrollbar_input(
+                let result = sc.scrollbar[a].handle_input(
                     chord,
-                    mouse_offset,
-                    mouse_subpx[a],
-                    cell_px[a],
+                    local[a] - inset_before as f32,
                     size,
-                    &mut sc.scrollbar[a],
                 );
                 if let ScrollbarInputResult::Handled(progress) = result {
                     handled = Some((a, progress));
@@ -477,7 +476,7 @@ impl Pane {
             } else {
                 u16::MAX
             };
-            let out = flow_child_measure(&**child, size_in);
+            let out = measure_child(&**child, size_in);
             state.slots[i].measured = out;
         }
 
@@ -486,9 +485,9 @@ impl Pane {
             let basis = Self::derive_basis(&**child, measured, main);
             let min = Self::derive_min_main_eff(&**child, measured, main);
             let max = child.get_layout().constraints.max_size[main];
-            state.slots[i].item = FlexItem::new(basis, min, max, child.get_flex());
+            state.items[i] = FlexItem::new(basis, min, max, child.get_flex());
         }
-        flex::resolve(&mut state.slots, container_main, gap_total);
+        flex::resolve(&mut state.items, container_main, gap_total);
 
         for (i, child) in self.children.iter().enumerate() {
             let cl = child.get_layout();
@@ -498,7 +497,7 @@ impl Pane {
             let flow_axis = child.get_flow_axis();
             let child_mode = cl.align.get_mode(cross).unwrap_or(cross_mode);
             let stretching = child_mode == FlexAlign::Stretch;
-            let used_main = state.slots[i].item.target;
+            let used_main = state.items[i].target;
             let measured_cross = state.slots[i].measured[cross];
 
             let used_cross = if stretching && !cross_scroll {
@@ -512,7 +511,7 @@ impl Pane {
                     let mut size_in = Vec2::of(0u16);
                     size_in[main] = used_main;
                     size_in[cross] = container_cross;
-                    let out = flow_child_measure(&**child, size_in);
+                    let out = measure_child(&**child, size_in);
                     out[cross]
                 };
                 if stretching {
@@ -529,16 +528,16 @@ impl Pane {
         }
     }
 
-    fn get_wrap(&self) -> Option<&WrapConfig> {
+    fn get_wrap_cfg(&self) -> Option<&WrapConfig> {
         self.wrap.as_deref()
     }
 
-    fn get_wrap_mut(&mut self) -> &mut WrapConfig {
+    fn get_wrap_cfg_mut(&mut self) -> &mut WrapConfig {
         self.wrap.get_or_insert_with(Default::default)
     }
 
     fn line_range(&self, line: usize) -> std::ops::Range<usize> {
-        let cfg = self.get_wrap().expect("line_range requires wrap config");
+        let cfg = self.get_wrap_cfg().expect("line_range requires wrap config");
         let start = cfg.line_starts[line];
         let end = if line + 1 < cfg.line_starts.len() {
             cfg.line_starts[line + 1]
@@ -567,8 +566,8 @@ impl Pane {
         let container_main = inner[main_axis];
         let container_cross = inner[cross_axis];
         let gap_main = self.gap as u16;
-        let (gap_cross, balanced) = match self.get_wrap() {
-            Some(w) => (w.cross_gap as u16, w.balanced),
+        let (gap_cross, balanced) = match self.get_wrap_cfg() {
+            Some(w) => (w.cross_gap as u16, w.mode == FlexWrap::Balanced),
             None => (0, false),
         };
         let cross_mode: FlexAlign = self.align.get_place(cross_axis).try_into().unwrap_or(FlexAlign::Start);
@@ -601,7 +600,7 @@ impl Pane {
                 } else {
                     u16::MAX
                 };
-                let out = flow_child_measure(&**child, size_in);
+                let out = measure_child(&**child, size_in);
                 let measured_cross = out[cross_axis];
                 let measured_basis = if flex > 0 {
                     0u16
@@ -720,7 +719,7 @@ impl Pane {
                 let mut size_in = Vec2::of(0u16);
                 size_in[main_axis] = used_main;
                 size_in[cross_axis] = container_cross;
-                let out = flow_child_measure(&**child, size_in);
+                let out = measure_child(&**child, size_in);
                 out[cross_axis]
             };
             scratch.cross_sizes[i] = raw.clamp(min_cross, max_cross);
@@ -799,7 +798,7 @@ impl Pane {
             let mut commit = Vec2::of(0u16);
             commit[main_axis] = scratch.items[i].target;
             commit[cross_axis] = scratch.cross_sizes[i];
-            flow_child_measure(&**child, commit);
+            measure_child(&**child, commit);
         }
     }
 
@@ -811,12 +810,12 @@ impl Pane {
         let inner = self.get_inner_content_size();
         let container_main = inner[main_axis] as i32;
         let gap_main = self.gap as i32;
-        let gap_cross = self.get_wrap().map(|w| w.cross_gap as i32).unwrap_or(0);
+        let gap_cross = self.get_wrap_cfg().map(|w| w.cross_gap as i32).unwrap_or(0);
         let place_main = self.align.get_place(main_axis);
         let place_cross = self.align.get_place(cross_axis);
         let main_mode: FlexAlign = place_main.try_into().unwrap_or(FlexAlign::Start);
         let cross_mode: FlexAlign = place_cross.try_into().unwrap_or(FlexAlign::Start);
-        let num_lines = self.get_wrap().map(|w| w.line_starts.len()).unwrap_or(0);
+        let num_lines = self.get_wrap_cfg().map(|w| w.line_starts.len()).unwrap_or(0);
         if num_lines == 0 {
             return;
         }
@@ -833,9 +832,9 @@ impl Pane {
 
         let mut line_offsets = Vec::with_capacity(num_lines);
         let mut cross_cursor = 0i32;
-        for line in 0..num_lines {
+        for &line_cross in &line_cross_sizes {
             line_offsets.push(cross_cursor);
-            cross_cursor += line_cross_sizes[line] as i32 + gap_cross;
+            cross_cursor += line_cross as i32 + gap_cross;
         }
 
         for line in 0..num_lines {
@@ -864,7 +863,7 @@ impl Pane {
                         }
                     }
                     _ => match main_mode {
-                        FlexAlign::Middle if ii == 0 => slack_main / 2,
+                        FlexAlign::Center if ii == 0 => slack_main / 2,
                         FlexAlign::End if ii == 0 => slack_main,
                         _ => 0,
                     },
@@ -880,7 +879,7 @@ impl Pane {
                     - self.children[i].get_outer_size()[cross_axis] as i32;
                 let cross_fit_offset = match child_mode {
                     FlexAlign::Start | FlexAlign::Stretch => 0,
-                    FlexAlign::Middle => slack_cross / 2,
+                    FlexAlign::Center => slack_cross / 2,
                     FlexAlign::End => slack_cross,
                 };
                 let mut pos = Vec2::of(0i32);
@@ -895,10 +894,6 @@ impl Pane {
         }
     }
 
-    fn is_wrapping(&self) -> bool {
-        self.wrap.is_some()
-    }
-
     fn commit_layout(&mut self, state: &FlexState) {
         for (i, child) in self.children.iter_mut().enumerate() {
             flow_child(&mut **child, state.slots[i].commit);
@@ -907,7 +902,7 @@ impl Pane {
 
     fn commit_measure(&self, state: &FlexState) {
         for (i, child) in self.children.iter().enumerate() {
-            flow_child_measure(&**child, state.slots[i].commit);
+            measure_child(&**child, state.slots[i].commit);
         }
     }
 
@@ -929,10 +924,10 @@ impl Pane {
 
     fn render_children(&self, child_ctx: &mut crate::render::RenderContext) {
         let a = self.orientation;
-        let physical_start = child_ctx.position[a] as i32;
+        let physical_start = child_ctx.pos[a] as i32;
         let physical_end = physical_start + child_ctx.physical_size[a] as i32;
         let anchor = child_ctx.anchor;
-        let monotonic = !self.is_wrapping();
+        let monotonic = self.wrap.is_none();
         for child in self.children.iter() {
             let child_pos = child.get_pos();
             let slot_size_a = child.get_rect_size()[a] as i32;
@@ -988,7 +983,7 @@ impl Widget for Pane {
 
     fn measure_constraints(&mut self) -> Constraints {
         self.each_child_mut(&mut constrain_child, Sign::Positive);
-        let wrapping = self.is_wrapping();
+        let wrapping = self.wrap.is_some();
         let min_size = Axis2D::map(|a| {
             let chrome = self.get_axis_overhead(a);
             let children_min = if wrapping {
@@ -1030,7 +1025,7 @@ impl Widget for Pane {
 
     fn layout_position(&mut self) {
         self.clamp_scroll();
-        if self.is_wrapping() {
+        if self.wrap.is_some() {
             self.wrap_layout_position();
             return;
         }
@@ -1069,7 +1064,7 @@ impl Widget for Pane {
                     }
                 }
                 _ => match main_mode {
-                    FlexAlign::Middle if i == 0 => slack_main / 2,
+                    FlexAlign::Center if i == 0 => slack_main / 2,
                     FlexAlign::End if i == 0 => slack_main,
                     _ => 0,
                 },
@@ -1081,7 +1076,7 @@ impl Widget for Pane {
             let slack = (cross_size - child_size[cross] as i32).max(0);
             match child_mode {
                 FlexAlign::Start | FlexAlign::Stretch => {}
-                FlexAlign::Middle => pos[cross] += slack / 2,
+                FlexAlign::Center => pos[cross] += slack / 2,
                 FlexAlign::End => pos[cross] += slack,
             }
             let margin_before = child.get_layout().get_margin_before().map(|v| v as i32);
@@ -1107,16 +1102,18 @@ impl Widget for Pane {
         ctx.move_to(border);
         ctx.set_style(self.layout.style);
 
-        let subcell = self
+        let fract = self
             .scroll
             .as_deref()
-            .map(|sc| Axis2D::map(|a| -(sc.subcell_scroll[a] as i32)))
-            .unwrap_or(Vec2::of(0i32));
-        let has_subcell = subcell.x != 0 || subcell.y != 0;
+            .map(|sc| sc.subcell_scroll)
+            .unwrap_or(Vec2::of(0.0));
+        let has_subcell = crate::is_gui() && fract != Vec2::of(0.0);
 
         if has_subcell {
             #[cfg(feature = "gui")]
             {
+                let cell_px = crate::get_runtime_info().cell_size.unwrap_or(Vec2::of(1));
+                let subcell = Axis2D::map(|a| -((fract[a] * cell_px[a] as f32).round() as i32));
                 let a = self.orientation;
                 let cross = a.flip();
                 let mut content_size = viewport;
@@ -1147,14 +1144,13 @@ impl Widget for Pane {
                 ctx.region(viewport)
             };
             self.render_children(&mut child_ctx);
-            drop(child_ctx);
         }
 
         if let Some(sc) = &self.scroll {
             let thumb = sc.style.get_resolved_thumb();
             let visible = Axis2D::map(|a| sc.scrollbar[a].is_visible());
             let both_visible = visible[Axis2D::X] && visible[Axis2D::Y];
-            let (extend, share_corner) = corner_extension(thumb, both_visible);
+            let (extend, share_corner) = thumb.corner_extension(both_visible);
             let half = Axis2D::map(|a| if extend[a] { 0.5 } else { 0.0 });
             let extra = Axis2D::map(|a| if extend[a] { 1 } else { 0 });
             let gutter = Vec2::new(x_sb_gutter, y_sb_gutter);
@@ -1179,14 +1175,13 @@ impl Widget for Pane {
                 region[axis] = new_len;
                 let size = viewport[axis] as f32 + half[axis] - inset_before as f32 - inset_after as f32;
 
-                scrollbar_render_smooth(
+                sc.scrollbar[axis].render_smooth(
                     &mut ctx,
                     self,
                     axis,
                     region,
                     size,
                     &sc.style,
-                    &sc.scrollbar[axis],
                     move |this: &Self| {
                         let sc = this.scroll.as_ref()?;
                         Some((&sc.style, &sc.scrollbar[axis]))
@@ -1199,23 +1194,22 @@ impl Widget for Pane {
             if share_corner
                 && self.get_inset_after(Axis2D::Y) == 0
                 && self.get_inset_after(Axis2D::X) == 0
+                && let ScrollbarThumb::Border(b) = thumb
             {
-                if let ScrollbarThumb::Border(b) = thumb {
-                    let reaches = Axis2D::map(|a| {
-                        thumb.has_half_cell(a) && {
-                            let view = viewport[a] as f32 + half[a]
-                                - self.get_inset_before(a) as f32
-                                - self.get_inset_after(a) as f32;
-                            sc.scrollbar[a].thumb_reaches_corner_half(view, thumb.get_subpixels(a) as f32)
-                        }
-                    });
-                    let x_in = reaches[Axis2D::X];
-                    let y_in = reaches[Axis2D::Y];
-                    if x_in || y_in {
-                        ctx.move_to(border + Vec2::new(viewport.x as i32 + y_sb_gutter - 1, viewport.y as i32 + x_sb_gutter - 1));
-                        ctx.set_style(sc.style.get_resolved().thumb_style);
-                        write!(ctx, "{}", b.get_arms(x_in, false, y_in, false));
+                let reaches = Axis2D::map(|a| {
+                    thumb.has_half_cell(a) && {
+                        let view = viewport[a] as f32 + half[a]
+                            - self.get_inset_before(a) as f32
+                            - self.get_inset_after(a) as f32;
+                        sc.scrollbar[a].thumb_reaches_corner_half(view, thumb.get_subpixels(a) as f32)
                     }
+                });
+                let x_in = reaches[Axis2D::X];
+                let y_in = reaches[Axis2D::Y];
+                if x_in || y_in {
+                    ctx.move_to(border + Vec2::new(viewport.x as i32 + y_sb_gutter - 1, viewport.y as i32 + x_sb_gutter - 1));
+                    ctx.set_style(sc.style.get_resolved().thumb_style);
+                    write!(ctx, "{}", b.get_arms(x_in, false, y_in, false));
                 }
             }
         }
@@ -1228,7 +1222,7 @@ impl Widget for Pane {
     ) -> Option<WidgetId> {
         for child in self.children.iter() {
             let grandchild = child
-                .find_descendant(predicate, path.as_mut().map(|p| &mut **p));
+                .find_descendant(predicate, path.as_deref_mut());
             if grandchild.is_some() {
                 if let Some(p) = &mut path {
                     p.push(child.get_id());
@@ -1251,7 +1245,7 @@ impl Widget for Pane {
         };
         match &event.chord {
             chord!(LeftClick) => {
-                let result = self.handle_scrollbar_input(&event.chord, event.mouse_pos, event.mouse_window_subpx, |sb, a, local, viewport, has_both, inset_before, inset_after| {
+                let result = self.handle_scrollbar_input(&event.chord, event.pos, |sb, a, local, viewport, has_both, inset_before, inset_after| {
                     if !sb.is_visible() {
                         return false;
                     }
@@ -1276,7 +1270,7 @@ impl Widget for Pane {
                 InputResult::Rejected
             }
             chord!(LeftDrag) | chord!(LeftRelease) => {
-                let result = self.handle_scrollbar_input(&event.chord, event.mouse_pos, event.mouse_window_subpx, |sb, _, _, _, _, _, _| {
+                let result = self.handle_scrollbar_input(&event.chord, event.pos, |sb, _, _, _, _, _, _| {
                     sb.is_dragging()
                 });
                 if result {
@@ -1292,9 +1286,7 @@ impl Widget for Pane {
                 if !self.is_scroll_enabled(a) {
                     return InputResult::Rejected;
                 }
-                let cell_px = crate::runtime::cell_px_along(a);
-                let delta_px: u32 = (delta * cell_px as f32).round() as u32;
-                if delta_px == 0 {
+                if delta == 0.0 {
                     return InputResult::Rejected;
                 }
                 queue.next();
@@ -1302,16 +1294,14 @@ impl Widget for Pane {
                 let sc = self.get_scroll_cfg_mut();
                 let old_scroll = sc.scroll[a];
                 let old_sub = sc.subcell_scroll[a];
-                let cell = cell_px as u32;
-                let cur_total = sc.scroll[a] as u64 * cell as u64 + sc.subcell_scroll[a] as u64;
-                let max_total = max as u64 * cell as u64;
+                let cur_total = sc.scroll[a] as f64 + sc.subcell_scroll[a] as f64;
                 let new_total = if direction.screen_sign() == Sign::Positive {
-                    (cur_total + delta_px as u64).min(max_total)
+                    (cur_total + delta as f64).min(max as f64)
                 } else {
-                    cur_total.saturating_sub(delta_px as u64)
+                    (cur_total - delta as f64).max(0.0)
                 };
-                sc.scroll[a] = (new_total / cell as u64) as u32;
-                sc.subcell_scroll[a] = (new_total % cell as u64) as u16;
+                sc.scroll[a] = (new_total as u64).min(max as u64) as u32;
+                sc.subcell_scroll[a] = (new_total - sc.scroll[a] as f64) as f32;
                 let changed = sc.scroll[a] != old_scroll || sc.subcell_scroll[a] != old_sub;
                 if changed {
                     self.dirty_paint();
@@ -1356,7 +1346,7 @@ impl Widget for Pane {
         if direction.screen_sign() == Sign::Positive {
             sc.scroll[a] < self.get_max_scroll(a)
         } else {
-            sc.scroll[a] > 0 || sc.subcell_scroll[a] > 0
+            sc.scroll[a] > 0 || sc.subcell_scroll[a] > 0.0
         }
     }
 
@@ -1381,12 +1371,12 @@ impl Widget for Pane {
     }
 
     fn layout_flow(&mut self, allocated: Vec2<u16>) -> Vec2<u16> {
-        if self.is_wrapping() {
+        if self.wrap.is_some() {
             let inner_size = WRAP_POOL.with(|p| {
                 let mut scratch = p.acquire();
                 let size = self.wrap_resolve(allocated, &mut scratch);
                 self.wrap_commit_layout(&scratch);
-                let cfg = self.get_wrap_mut();
+                let cfg = self.get_wrap_cfg_mut();
                 cfg.line_starts.clear();
                 cfg.line_starts.extend_from_slice(&scratch.line_starts);
                 cfg.resolved_size = size;
@@ -1402,11 +1392,11 @@ impl Widget for Pane {
             self.commit_layout(&state);
         });
         self.sync_scrollbars();
-        self.get_flex_total(get_flow_output_size_layout)
+        self.get_flex_total(flow_output_size)
     }
 
     fn layout_measure(&self, allocated: Vec2<u16>) -> Vec2<u16> {
-        if self.is_wrapping() {
+        if self.wrap.is_some() {
             let inner_size = WRAP_POOL.with(|p| {
                 let mut scratch = p.acquire();
                 let size = self.wrap_resolve(allocated, &mut scratch);
@@ -1421,7 +1411,7 @@ impl Widget for Pane {
             self.flex_resolve(allocated, &mut state);
             self.commit_measure(&state);
         });
-        self.get_flex_total(get_flow_output_size_measure)
+        self.get_flex_total(measure_output_size)
     }
 
     fn after_layout(&mut self) {
@@ -1434,7 +1424,7 @@ impl Widget for Pane {
         &mut self,
         _child: Option<WidgetId>,
         revelation: &mut Revelation,
-        scroll_align: Vec2<Option<Align>>,
+        align: Vec2<Option<Align>>,
     ) {
         let border = self.get_border_offset();
         let viewport = self.get_viewport_size();
@@ -1454,7 +1444,7 @@ impl Widget for Pane {
                 revelation.get_rects().iter()
                     .map(|r| (r.pos[a] - border[a] - inset_before, r.size[a] as i32)),
                 safe_viewport,
-                scroll_align[a],
+                align[a],
                 scrolloff,
             );
             let target = old_scroll[a] as i32 + d;
@@ -1489,14 +1479,13 @@ impl Widget for Pane {
             return None;
         }
 
-        let cell_px = crate::runtime::tree::cell_px();
-        let pos = crate::runtime::tree::apply_subcell_offset(self, pos, cell_px);
+        let pos = pos - self.get_subcell_offset();
 
         for child in self.children.iter() {
             if Self::child_contains(&**child, pos) {
                 let descendant = child.descendant_at_pos(
                     pos,
-                    path.as_mut().map(|p| &mut **p),
+                    path.as_deref_mut(),
                 );
                 if let Some(r) = descendant {
                     if let Some(p) = &mut path {
@@ -1533,15 +1522,14 @@ impl Widget for Pane {
             return None;
         }
 
-        let cell_px = crate::runtime::tree::cell_px();
-        let pos = crate::runtime::tree::apply_subcell_offset(self, pos, cell_px);
+        let pos = pos - self.get_subcell_offset();
 
         for child in self.children.iter() {
             if Self::child_contains(&**child, pos) {
                 let grandchild = child.find_descendant_at_pos(
                     pos,
                     predicate,
-                    path.as_mut().map(|p| &mut **p),
+                    path.as_deref_mut(),
                 );
                 if grandchild.is_some() {
                     if let Some(p) = &mut path {
@@ -1559,28 +1547,6 @@ impl Widget for Pane {
         None
     }
 
-    fn subcell_offset(&self, cell: Vec2<i32>) -> Vec2<i32> {
-        let Some(sc) = self.scroll.as_deref() else {
-            return Vec2::of(0i32);
-        };
-        if sc.subcell_scroll.x == 0 && sc.subcell_scroll.y == 0 {
-            return Vec2::of(0i32);
-        }
-        let screen = cell + self.layout.rect.pos;
-        let border = self.get_border_offset();
-        let content_pos = self.layout.rect.pos + border;
-        let viewport = self.get_viewport_size();
-        let slack = Axis2D::map(|a| if sc.subcell_scroll[a] > 0 { 1i32 } else { 0 });
-        let in_x = screen.x >= content_pos.x - slack.x
-            && screen.x < content_pos.x + viewport.x as i32 + slack.x;
-        let in_y = screen.y >= content_pos.y - slack.y
-            && screen.y < content_pos.y + viewport.y as i32 + slack.y;
-        if !(in_x && in_y) {
-            return Vec2::of(0i32);
-        }
-        Axis2D::map(|a| -(sc.subcell_scroll[a] as i32))
-    }
-
     fn get_cursor(
         &self,
         selected: Option<WidgetId>,
@@ -1588,7 +1554,7 @@ impl Widget for Pane {
         let selected = selected?;
         let smooth = self.scroll.as_deref();
         let extra = Axis2D::map(|a| match smooth {
-            Some(sc) if sc.subcell_scroll[a] == 0 => 0i32,
+            Some(sc) if sc.subcell_scroll[a] == 0.0 => 0i32,
             _ => 1i32,
         });
         for child in self.children.iter() {
@@ -1815,14 +1781,14 @@ impl Pane {
         mut self: Box<Self>,
         edge: VerticalEdge,
         align: Align,
-        title: impl Into<String>,
+        title: impl Into<StyledString>,
     ) -> Box<Self> {
         self.set_title_at(edge, align, Some(title.into()));
         self
     }
 
     /// Sets the top-left title.
-    pub fn title(self: Box<Self>, title: impl Into<String>) -> Box<Self> {
+    pub fn title(self: Box<Self>, title: impl Into<StyledString>) -> Box<Self> {
         self.title_at(VerticalEdge::Top, Align::Start, title)
     }
 
@@ -1831,14 +1797,14 @@ impl Pane {
         &mut self,
         edge: VerticalEdge,
         align: Align,
-        title: Option<String>,
+        title: Option<StyledString>,
     ) {
         self.get_chrome_mut().set_title_at(edge, align, title);
         self.dirty_paint();
     }
 
     /// Sets or clears the top-left title.
-    pub fn set_title(&mut self, title: Option<String>) {
+    pub fn set_title(&mut self, title: Option<StyledString>) {
         self.set_title_at(VerticalEdge::Top, Align::Start, title);
     }
 
@@ -1858,13 +1824,8 @@ impl Pane {
     }
 
     crate::layout_field! {
-        /// Whether overflowing children wrap onto a new line.
-        wrap: bool => wrap?
-    }
-
-    crate::layout_field! {
-        /// Whether wrapped children are distributed evenly across lines.
-        balanced: bool => wrap?.balanced
+        /// How overflowing children wrap onto new lines.
+        wrap: FlexWrap => wrap?.mode
     }
 
     crate::layout_field! {
@@ -1881,6 +1842,18 @@ impl Pane {
     /// Sets the horizontal scrolling mode.
     pub fn x_scroll(mut self: Box<Self>, mode: Scrollbar) -> Box<Self> {
         self.set_x_scroll(Some(mode));
+        self
+    }
+
+    /// Sets the optional vertical scrolling mode.
+    pub fn y_scroll_opt(mut self: Box<Self>, mode: Option<Scrollbar>) -> Box<Self> {
+        self.set_y_scroll(mode);
+        self
+    }
+
+    /// Sets the optional horizontal scrolling mode.
+    pub fn x_scroll_opt(mut self: Box<Self>, mode: Option<Scrollbar>) -> Box<Self> {
+        self.set_x_scroll(mode);
         self
     }
 
@@ -1922,7 +1895,7 @@ impl Pane {
     pub fn get_scrollbar_style(&self) -> ScrollbarStyle {
         self.get_scroll_cfg()
             .map(|sc| sc.style.clone())
-            .unwrap_or_else(ScrollbarStyle::new)
+            .unwrap_or_default()
     }
 
     /// Sets the scrollbar style.
@@ -1937,10 +1910,8 @@ impl Pane {
             return 0.0;
         }
         let max = self.get_max_scroll(axis);
-        if max == 0 {
-            return 0.0;
-        }
-        self.get_scroll_cfg().unwrap().scroll[axis] as f32 / max as f32
+        let sc = self.get_scroll_cfg().unwrap();
+        ScrollbarState::progress_from_subcell(sc.scroll[axis], sc.subcell_scroll[axis], max)
     }
 
     /// Sets the scroll position on `axis` from a `[0.0, 1.0]` fraction.
@@ -1949,8 +1920,7 @@ impl Pane {
             return;
         }
         let max = self.get_max_scroll(axis);
-        let cell_px = crate::runtime::cell_px_along(axis);
-        let (new_scroll, new_subcell) = subcell_from_progress(progress, max, cell_px);
+        let (new_scroll, new_subcell) = ScrollbarState::subcell_from_progress(progress, max);
         let sc = self.get_scroll_cfg_mut();
         let changed = new_scroll != sc.scroll[axis]
             || new_subcell != sc.subcell_scroll[axis];
@@ -1991,7 +1961,7 @@ impl Pane {
         } else {
             sc.scroll[a] = sc.scroll[a].saturating_sub((-delta) as u32);
         }
-        sc.subcell_scroll[a] = 0;
+        sc.subcell_scroll[a] = 0.0;
         if sc.scroll[a] != old_scroll || sc.subcell_scroll[a] != old_sub {
             self.dirty_paint();
             self.sync_scrollbars();

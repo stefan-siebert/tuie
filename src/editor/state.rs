@@ -61,7 +61,7 @@ impl<T: TextDocument> EditorState<T> {
                 entry.cursor_after
             };
             self.dirty = true;
-            text.replace_range(pos, pos + deleted_len, &inserted);
+            text.replace_range(pos..pos + deleted_len, &inserted);
             let idx = std::cmp::min(cursor, text.len());
             self.cursor.set_index(text, idx);
             self.anchor = self.cursor.clone();
@@ -107,10 +107,10 @@ impl<T: TextDocument> EditorState<T> {
         }
     }
 
-    /// Returns a cursor positioned at byte offset `pos`.
-    pub fn cursor_at_index(&self, text: &T, pos: usize) -> T::Cursor {
+    /// Returns a cursor positioned at byte offset `index`.
+    pub fn cursor_at_index(&self, text: &T, index: usize) -> T::Cursor {
         let mut cursor = self.cursor.clone();
-        cursor.set_index(text, pos);
+        cursor.set_index(text, index);
         cursor
     }
 
@@ -125,7 +125,7 @@ impl<T: TextDocument> EditorState<T> {
 
     /// Returns the substring between two cursors.
     pub fn slice_cursors(&self, text: &T, start: &T::Cursor, end: &T::Cursor) -> String {
-        text.slice(start.get_index(), end.get_index())
+        text.slice(start.get_index()..end.get_index())
     }
 
     /// Replaces the range between two cursors with `replacement`.
@@ -134,17 +134,12 @@ impl<T: TextDocument> EditorState<T> {
         end: &T::Cursor,
         replacement: &str,
     ) {
-        self.replace_range(text, start.get_index(), end.get_index(), replacement);
+        self.replace_range(text, start.get_index()..end.get_index(), replacement);
     }
 
     /// Returns the side of a wrap boundary the cursor renders on.
     pub fn get_wrap_bias(&self) -> Sign {
         self.bias
-    }
-
-    /// Returns whether the selection includes the grapheme under the cursor.
-    pub fn is_inclusive_selection(&self) -> bool {
-        self.inclusive_selection
     }
 
     /// Applies `affinity` after a motion, updating the wrap bias and preferred column.
@@ -187,16 +182,16 @@ impl<T: TextDocument> EditorState<T> {
         }
     }
 
-    /// Replaces bytes `start..end` with `replacement`, coalescing into the current undo entry when contiguous.
+    /// Replaces the byte `range` with `replacement`, coalescing into the current undo entry when contiguous.
     pub fn replace_range(
-        &mut self, text: &mut T, start: usize,
-        end: usize,
+        &mut self, text: &mut T, range: std::ops::Range<usize>,
         replacement: &str,
     ) {
+        let std::ops::Range { start, end } = range;
         self.dirty = true;
         self.save_cursor_before_edit();
-        let deleted = text.slice(start, end);
-        text.replace_range(start, end, replacement);
+        let deleted = text.slice(start..end);
+        text.replace_range(start..end, replacement);
         if self.undo_text_dirty {
             let entry = &mut self.undo_stack[self.undo_index];
             let ins_start = entry.pos;
@@ -255,7 +250,7 @@ impl<T: TextDocument> EditorState<T> {
             let deleted = entry.deleted.clone();
             let inserted_len = entry.inserted.len();
             self.dirty = true;
-            text.replace_range(pos, pos + inserted_len, &deleted);
+            text.replace_range(pos..pos + inserted_len, &deleted);
             self.undo_index -= 1;
             let idx = std::cmp::min(cursor, text.len());
             self.cursor.set_index(text, idx);
@@ -277,18 +272,19 @@ impl<T: TextDocument> EditorState<T> {
     /// Deletes the selection and collapses the cursor to the selection start.
     pub fn delete_selection(&mut self, text: &mut T) {
         let (start, end) = self.get_selection();
-        self.replace_range(text, start.get_index(), end.get_index(), "");
+        self.replace_range(text, start.get_index()..end.get_index(), "");
         self.cursor.set_index(text, start.get_index());
         self.anchor = self.cursor.clone();
     }
 
-    /// Deletes the byte range `start..end`.
-    pub fn delete_text(&mut self, text: &mut T, start: usize, end: usize) {
-        self.replace_range(text, start, end, "");
+    /// Deletes the byte `range`.
+    pub fn delete_range(&mut self, text: &mut T, range: std::ops::Range<usize>) {
+        self.replace_range(text, range, "");
     }
 
-    /// Deletes the byte range `start..end`, adjusting for a trailing newline at end of file.
-    pub fn delete_lines(&mut self, text: &mut T, start: usize, end: usize) {
+    /// Deletes the byte `range`, adjusting for a trailing newline at end of file.
+    pub fn delete_lines(&mut self, text: &mut T, range: std::ops::Range<usize>) {
+        let std::ops::Range { start, end } = range;
         let len = text.len();
         let clamped = std::cmp::min(end, len);
         let eat_backward = end > len
@@ -296,22 +292,22 @@ impl<T: TextDocument> EditorState<T> {
             && self.cursor_at_index(text, start - 1).get_char(text) == '\n';
 
         if eat_backward {
-            self.replace_range(text, start - 1, clamped, "");
+            self.replace_range(text, start - 1..clamped, "");
             self.cursor.set_index(text, start - 1);
         } else {
-            self.replace_range(text, start, clamped, "");
+            self.replace_range(text, start..clamped, "");
             self.cursor.set_index(text, start);
         }
         self.anchor = self.cursor.clone();
         self.update(text, Affinity::End);
     }
 
-    /// Replaces the byte range `start..end` with `replacement`, preserving a trailing newline.
+    /// Replaces the byte `range` with `replacement`, preserving a trailing newline.
     pub fn replace_lines(
-        &mut self, text: &mut T, start: usize,
-        end: usize,
+        &mut self, text: &mut T, range: std::ops::Range<usize>,
         replacement: &str,
     ) {
+        let std::ops::Range { start, end } = range;
         let len = text.len();
         let clamped = std::cmp::min(end, len);
         let has_trailing_nl = end <= len
@@ -319,9 +315,9 @@ impl<T: TextDocument> EditorState<T> {
             && self.cursor_at_index(text, clamped - 1).get_char(text) == '\n';
 
         if has_trailing_nl {
-            self.replace_range(text, start, clamped - 1, replacement);
+            self.replace_range(text, start..clamped - 1, replacement);
         } else {
-            self.replace_range(text, start, clamped, replacement);
+            self.replace_range(text, start..clamped, replacement);
         }
         self.cursor.set_index(text, start);
         self.anchor = self.cursor.clone();
@@ -343,7 +339,7 @@ impl<T: TextDocument> EditorState<T> {
     /// Inserts `s`, replacing the selection if any.
     pub fn insert_str(&mut self, text: &mut T, s: &str) {
         let (start, end) = self.get_selection();
-        self.replace_range(text, start.get_index(), end.get_index(), s);
+        self.replace_range(text, start.get_index()..end.get_index(), s);
         self.cursor.set_index(text, start.get_index() + s.len());
         self.anchor = self.cursor.clone();
         self.update(text, Affinity::End);
@@ -359,10 +355,10 @@ impl<T: TextDocument> EditorState<T> {
         }
         let mut after = self.cursor.clone();
         after.move_grapheme(text, Sign::Positive);
-        let left = text.slice(before.get_index(), self.cursor.get_index());
-        let right = text.slice(self.cursor.get_index(), after.get_index());
+        let left = text.slice(before.get_index()..self.cursor.get_index());
+        let right = text.slice(self.cursor.get_index()..after.get_index());
         let swapped = format!("{}{}", right, left);
-        self.replace_range(text, before.get_index(), after.get_index(), &swapped);
+        self.replace_range(text, before.get_index()..after.get_index(), &swapped);
         self.cursor.set_index(text, after.get_index());
         self.anchor = self.cursor.clone();
         self.update(text, Affinity::End);
@@ -374,7 +370,7 @@ impl<T: TextDocument> EditorState<T> {
             let mut target = self.cursor.clone();
             target.move_grapheme(text, direction);
             let (start, end) = direction.order(self.cursor.get_index(), target.get_index());
-            self.delete_text(text, start, end);
+            self.delete_range(text, start..end);
             self.cursor.set_index(text, start);
         } else {
             self.delete_selection(text);
@@ -391,7 +387,7 @@ impl<T: TextDocument> EditorState<T> {
             self.cursor.move_word(text, direction);
             let end = self.cursor.get_index();
             let (start, end) = direction.order(start, end);
-            self.delete_text(text, start, end);
+            self.delete_range(text, start..end);
             self.cursor.set_index(text, start);
         } else {
             self.delete_selection(text);
@@ -450,7 +446,7 @@ impl<T: TextDocument> EditorState<T> {
     }
 
     /// Moves the cursor to the start or end of the current wrapped screen line toward `sign`.
-    pub fn move_screen_line_end(&mut self, text: &T, sign: Sign) {
+    pub fn move_screen_line_edge(&mut self, text: &T, sign: Sign) {
         let mut pos = self.cursor.get_virtual_pos(text, self.bias).map(|v| v as i32);
         pos.x = match sign {
             Sign::Positive => i32::MAX,
@@ -459,13 +455,13 @@ impl<T: TextDocument> EditorState<T> {
         self.cursor = self.cursor_at_pos(text, pos);
     }
 
-    /// Returns the `(top, bottom)` inclusive-exclusive visible row range.
-    pub fn get_visible_region(&self, text: &T) -> (i32, i32) {
+    /// Returns the visible row range.
+    pub fn get_visible_range(&self, text: &T) -> std::ops::Range<i32> {
         if let Some(measure) = tuie::get_focused_measure() {
             let offset = measure.visible_pos.y as i32 - measure.pos.y;
-            (offset, offset + measure.visible_size.y as i32)
+            offset..offset + measure.visible_size.y as i32
         } else {
-            (0, text.get_visible_size().y as i32)
+            0..text.get_visible_size().y as i32
         }
     }
 
@@ -513,7 +509,7 @@ impl<T: TextDocument> EditorState<T> {
         self.update_preferred_col(text);
     }
 
-    /// Selects the word at screen position `pos` by expanding through matching [`CharClass`].
+    /// Selects the word at screen position `pos` by expanding through matching [`CharClass`](crate::editor::char_class::CharClass).
     pub fn double_click(&mut self, text: &T, pos: Vec2<i32>) {
         if text.len() == 0 {
             return;
@@ -605,7 +601,7 @@ impl<T: TextDocument> EditorState<T> {
     }
 
     /// Steps the cursor one cell in `direction`, collapsing onto the selection edge on a horizontal step.
-    pub fn nav(&mut self, text: &T, direction: Direction2D) -> Affinity {
+    fn nav(&mut self, text: &T, direction: Direction2D) -> Affinity {
         if direction.axis() == Axis2D::X {
             if self.cursor == self.anchor {
                 self.cursor.move_grapheme(text, direction.screen_sign());
@@ -622,7 +618,7 @@ impl<T: TextDocument> EditorState<T> {
     }
 
     /// Steps the cursor one cell in `direction` without collapsing the selection.
-    pub fn nav_extend(&mut self, text: &T, direction: Direction2D) -> Affinity {
+    fn nav_extend(&mut self, text: &T, direction: Direction2D) -> Affinity {
         if direction.axis() == Axis2D::X {
             self.cursor.move_grapheme(text, direction.screen_sign());
             affinity_for_motion(direction.screen_sign())
@@ -633,31 +629,31 @@ impl<T: TextDocument> EditorState<T> {
     }
 
     /// Moves the cursor by one word in `sign`.
-    pub fn word(&mut self, text: &T, sign: Sign) -> Affinity {
+    fn word(&mut self, text: &T, sign: Sign) -> Affinity {
         self.cursor.move_word(text, sign);
         affinity_for_motion(sign)
     }
 
     /// Moves the cursor to the start or end of the current wrapped screen line.
-    pub fn screen_line_end(&mut self, text: &T, sign: Sign) -> Affinity {
-        self.move_screen_line_end(text, sign);
+    fn screen_line_edge(&mut self, text: &T, sign: Sign) -> Affinity {
+        self.move_screen_line_edge(text, sign);
         affinity_for_motion(sign)
     }
 
     /// Moves the cursor to the start or end of the document.
-    pub fn document_end(&mut self, text: &T, sign: Sign) -> Affinity {
-        self.cursor.move_document_end(text, sign);
+    fn document_edge(&mut self, text: &T, sign: Sign) -> Affinity {
+        self.cursor.move_document_edge(text, sign);
         affinity_for_motion(sign)
     }
 
     /// Returns the selected substring.
     pub fn get_selection_text(&self, text: &T) -> String {
         let (start, end) = self.get_selection();
-        text.slice(start.get_index(), end.get_index())
+        text.slice(start.get_index()..end.get_index())
     }
 
     /// Copies the selection to the clipboard.
-    pub fn copy_selection(&mut self, text: &T) {
+    pub fn copy(&mut self, text: &T) {
         if self.anchor != self.cursor {
             tuie::clipboard::write(ClipboardItem::Text(self.get_selection_text(text)));
         }
@@ -679,7 +675,7 @@ impl<T: TextDocument> EditorState<T> {
         if let Some(content) = tuie::clipboard::read_string() {
             let (start, end) = self.get_selection();
             let start_idx = start.get_index();
-            self.replace_range(text, start_idx, end.get_index(), &content);
+            self.replace_range(text, start_idx..end.get_index(), &content);
             self.cursor.set_index(text, start_idx + content.len());
             self.anchor = self.cursor.clone();
             self.update(text, Affinity::End);
@@ -689,7 +685,7 @@ impl<T: TextDocument> EditorState<T> {
     }
 
     /// Deletes from the cursor to the adjacent line boundary in `sign`.
-    pub fn delete_to_line_end(&mut self, text: &mut T, sign: Sign) {
+    pub fn delete_to_line_edge(&mut self, text: &mut T, sign: Sign) {
         self.move_adjacent_line_start(text, sign);
         self.delete_selection(text);
         self.update(text, Affinity::End);
@@ -722,14 +718,14 @@ impl<T: TextDocument> EditorState<T> {
     }
 
     /// Extends the cursor to the document edge in `sign`, swapping cursor and anchor when reversing past the anchor.
-    pub fn grow_document_end(&mut self, text: &T, sign: Sign) -> Affinity {
+    fn grow_document_edge(&mut self, text: &T, sign: Sign) -> Affinity {
         if self.cursor.get_index() == sign.flip().bound(text.len())
             && self.anchor.get_index() != sign.bound(text.len())
         {
             std::mem::swap(&mut self.cursor, &mut self.anchor);
-            self.cursor.move_document_end(text, sign);
+            self.cursor.move_document_edge(text, sign);
         } else {
-            self.cursor.move_document_end(text, sign);
+            self.cursor.move_document_edge(text, sign);
         }
         affinity_for_motion(sign)
     }
@@ -766,41 +762,41 @@ impl<T: TextDocument> EditorState<T> {
     }
 
     /// Moves the cursor to the screen line edge and collapses the selection.
-    pub fn move_cursor_line_end(&mut self, text: &T, sign: Sign) {
-        let affinity = self.screen_line_end(text, sign);
+    pub fn move_cursor_line_edge(&mut self, text: &T, sign: Sign) {
+        let affinity = self.screen_line_edge(text, sign);
         self.anchor = self.cursor.clone();
         self.update(text, affinity);
     }
 
     /// Extends the selection to the screen line edge.
-    pub fn extend_selection_line_end(&mut self, text: &T, sign: Sign) {
-        let affinity = self.screen_line_end(text, sign);
+    pub fn extend_selection_line_edge(&mut self, text: &T, sign: Sign) {
+        let affinity = self.screen_line_edge(text, sign);
         self.update(text, affinity);
     }
 
     /// Moves the cursor to the start or end of the document and collapses the selection.
-    pub fn move_cursor_document_end(&mut self, text: &T, sign: Sign) {
-        let affinity = self.document_end(text, sign);
+    pub fn move_cursor_document_edge(&mut self, text: &T, sign: Sign) {
+        let affinity = self.document_edge(text, sign);
         self.anchor = self.cursor.clone();
         self.update(text, affinity);
     }
 
     /// Extends the selection to the start or end of the document.
-    pub fn extend_selection_document_end(&mut self, text: &T, sign: Sign) {
-        let affinity = self.document_end(text, sign);
+    pub fn extend_selection_document_edge(&mut self, text: &T, sign: Sign) {
+        let affinity = self.document_edge(text, sign);
         self.update(text, affinity);
     }
 
     /// Extends the selection to the document edge in `sign`, swapping cursor and anchor when reversing past the anchor.
-    pub fn grow_extend_selection_document_end(&mut self, text: &T, sign: Sign) {
-        let affinity = self.grow_document_end(text, sign);
+    pub fn grow_extend_selection_document_edge(&mut self, text: &T, sign: Sign) {
+        let affinity = self.grow_document_edge(text, sign);
         self.update(text, affinity);
     }
 
     /// Replaces the entire document content with `s`.
-    pub fn replace_all(&mut self, text: &mut T, s: &str) {
+    pub fn set_content(&mut self, text: &mut T, s: &str) {
         let len = text.len();
-        self.replace_range(text, 0, len, s);
+        self.replace_range(text, 0..len, s);
         let end = text.len();
         self.cursor.set_index(text, end);
         self.anchor = self.cursor.clone();

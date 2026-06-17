@@ -286,10 +286,10 @@ fn for_each_in_path(
         if idx >= start && idx < end {
             f(widget);
         }
-        if idx + 1 < path.len() {
-            if let Some(child) = widget.get_child_mut(path[idx + 1]) {
-                inner(child, path, idx + 1, start, end, f);
-            }
+        if idx + 1 < path.len()
+            && let Some(child) = widget.get_child_mut(path[idx + 1])
+        {
+            inner(child, path, idx + 1, start, end, f);
         }
     }
     inner(widget, path, idx, start, end, &mut f);
@@ -320,14 +320,19 @@ fn for_each_edge_in_path(
     inner(widget, path, idx, &mut f);
 }
 
-fn emit_along_path(widget: &mut dyn Widget, path: &[WidgetId], idx: usize, event: &mut WidgetEvent) {
+fn emit_along_path(
+    widget: &mut dyn Widget,
+    path: &[WidgetId],
+    idx: usize,
+    event: &mut WidgetEvent,
+) {
     if idx >= path.len() || widget.get_id() != path[idx] {
         return;
     }
-    if idx + 1 < path.len() {
-        if let Some(child) = widget.get_child_mut(path[idx + 1]) {
-            emit_along_path(child, path, idx + 1, event);
-        }
+    if idx + 1 < path.len()
+        && let Some(child) = widget.get_child_mut(path[idx + 1])
+    {
+        emit_along_path(child, path, idx + 1, event);
     }
     widget.on_event(event);
 }
@@ -369,7 +374,7 @@ impl Spacing {
         })
     }
     /// Creates equal spacing on each axis scaled to `n` horizontal cells.
-    pub fn balanced(n: u8) -> Self {
+    pub const fn balanced(n: u8) -> Self {
         let y = (n + 1) / 3;
         Spacing(Vec2 {
             x: [n, n],
@@ -459,12 +464,9 @@ pub struct Layout {
     pub flex: u8,
     /// The per-axis alignment override.
     pub align: AlignOverride,
-    /// Explicit per-axis minimum size, or `None` for the intrinsic minimum.
-    pub explicit_min: Vec2<Option<NonMaxU16>>,
-    /// Explicit per-axis maximum size, or `None` for unbounded.
-    pub explicit_max: Vec2<Option<NonMaxU16>>,
-    /// Explicit per-axis preferred size, or `None` for the intrinsic preferred size.
-    pub explicit_pref: Vec2<Option<NonMaxU16>>,
+    pub(crate) explicit_min: Vec2<Option<NonMaxU16>>,
+    pub(crate) explicit_max: Vec2<Option<NonMaxU16>>,
+    pub(crate) explicit_pref: Vec2<Option<NonMaxU16>>,
     flags: LayoutFlags,
     /// The cached min, max, and preferred sizes.
     pub constraints: Constraints,
@@ -552,6 +554,12 @@ impl FlowMeasureCache {
         } else {
             self.entries[self.len as usize - 1].output_size
         }
+    }
+}
+
+impl Default for Layout {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -758,6 +766,7 @@ impl Layout {
 
 /// Interaction state of a widget, used to drive styling and event routing.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[non_exhaustive]
 pub enum WidgetState {
     /// Neither focused nor hovered.
     None,
@@ -784,6 +793,7 @@ impl std::fmt::Display for WidgetState {
 }
 
 /// A type-erased message published by a widget.
+#[non_exhaustive]
 pub struct WidgetEvent {
     /// Id of the widget that emitted the event.
     pub source: WidgetId,
@@ -895,6 +905,11 @@ pub trait DelegateWidget: 'static {
         self.get_delegate().find_descendant_at_pos(pos, predicate, path)
     }
 
+    /// Override hook for [`Widget::get_subcell_offset`].
+    fn override_get_subcell_offset(&self) -> Vec2<f32> {
+        self.get_delegate().get_subcell_offset()
+    }
+
     /// Override hook for [`Widget::each_child`].
     fn override_each_child(
         &self,
@@ -1001,9 +1016,9 @@ pub trait DelegateWidget: 'static {
         &mut self,
         child: Option<WidgetId>,
         revelation: &mut Revelation,
-        scroll: Vec2<Option<Align>>,
+        align: Vec2<Option<Align>>,
     ) {
-        self.get_delegate_mut().reveal(child, revelation, scroll);
+        self.get_delegate_mut().reveal(child, revelation, align);
     }
 
     /// Override hook for [`Widget::before_focus_move`].
@@ -1014,11 +1029,6 @@ pub trait DelegateWidget: 'static {
         direction: Sign,
     ) {
         self.get_delegate_mut().before_focus_move(selected_child, axis, direction);
-    }
-
-    /// Override hook for [`Widget::subcell_offset`].
-    fn override_subcell_offset(&self, cell: Vec2<i32>) -> Vec2<i32> {
-        self.get_delegate().subcell_offset(cell)
     }
 
     /// Called after [`Widget::before_layout`] on the delegate.
@@ -1050,7 +1060,7 @@ pub trait DelegateWidget: 'static {
         &mut self,
         _child: Option<WidgetId>,
         _revelation: &Revelation,
-        _scroll: Vec2<Option<Align>>,
+        _align: Vec2<Option<Align>>,
     ) {}
 
     /// Called after [`Widget::before_focus_move`] on the delegate.
@@ -1114,6 +1124,10 @@ impl<T: DelegateWidget> Widget for T {
         path: Option<&mut Vec<WidgetId>>,
     ) -> Option<WidgetId> {
         self.override_find_descendant_at_pos(pos, predicate, path)
+    }
+
+    fn get_subcell_offset(&self) -> Vec2<f32> {
+        self.override_get_subcell_offset()
     }
 
     fn each_child(
@@ -1218,10 +1232,10 @@ impl<T: DelegateWidget> Widget for T {
         &mut self,
         child: Option<WidgetId>,
         revelation: &mut Revelation,
-        scroll: Vec2<Option<Align>>,
+        align: Vec2<Option<Align>>,
     ) {
-        self.override_reveal(child, revelation, scroll);
-        self.after_reveal(child, revelation, scroll);
+        self.override_reveal(child, revelation, align);
+        self.after_reveal(child, revelation, align);
     }
 
     fn before_focus_move(
@@ -1232,10 +1246,6 @@ impl<T: DelegateWidget> Widget for T {
     ) {
         self.override_before_focus_move(selected_child, axis, direction);
         self.after_before_focus_move(selected_child, axis, direction);
-    }
-
-    fn subcell_offset(&self, cell: Vec2<i32>) -> Vec2<i32> {
-        self.override_subcell_offset(cell)
     }
 }
 
@@ -1313,7 +1323,7 @@ pub fn flow_child(child: &mut dyn Widget, size: Vec2<u16>) -> Vec2<u16> {
 }
 
 /// Runs the measure-pass flow for `child` against `size` and returns the outer output size.
-pub fn flow_child_measure(child: &dyn Widget, size: Vec2<u16>) -> Vec2<u16> {
+pub fn measure_child(child: &dyn Widget, size: Vec2<u16>) -> Vec2<u16> {
     let layout = child.get_layout();
     let margin = layout.get_margin_total();
     let content_alloc = Axis2D::map(|a| size[a].saturating_sub(margin[a]));
@@ -1337,14 +1347,14 @@ pub fn flow_child_measure(child: &dyn Widget, size: Vec2<u16>) -> Vec2<u16> {
 }
 
 /// Returns the last layout output size including margin.
-pub fn get_flow_output_size_layout(layout: &Layout) -> Vec2<u16> {
+pub fn flow_output_size(layout: &Layout) -> Vec2<u16> {
     let margin = layout.get_margin_total();
     let content_out = layout.flow_layout.output_size;
     Axis2D::map(|a| content_out[a].saturating_add(margin[a]))
 }
 
 /// Returns the last measure output size including margin.
-pub fn get_flow_output_size_measure(layout: &Layout) -> Vec2<u16> {
+pub fn measure_output_size(layout: &Layout) -> Vec2<u16> {
     let margin = layout.get_margin_total();
     let content_out = layout.get_flow_measure_last();
     Axis2D::map(|a| content_out[a].saturating_add(margin[a]))
@@ -1401,6 +1411,11 @@ pub trait Widget: std::any::Any {
         _path: Option<&mut Vec<WidgetId>>,
     ) -> Option<WidgetId> {
         None
+    }
+
+    /// Returns the render-time shift of this widget's content in cell fractions.
+    fn get_subcell_offset(&self) -> Vec2<f32> {
+        Vec2::of(0.0)
     }
 
     /// Calls `f` on each direct child in the order implied by `direction`.
@@ -1516,7 +1531,7 @@ pub trait Widget: std::any::Any {
         &mut self,
         _child: Option<WidgetId>,
         _revelation: &mut Revelation,
-        _scroll: Vec2<Option<Align>>,
+        _align: Vec2<Option<Align>>,
     ) {}
 
     /// Called before focus moves between children.
@@ -1526,11 +1541,6 @@ pub trait Widget: std::any::Any {
         _axis: Option<Axis2D>,
         _direction: Sign,
     ) {}
-
-    /// Returns the sub-cell pixel offset at `cell`.
-    fn subcell_offset(&self, _cell: Vec2<i32>) -> Vec2<i32> {
-        Vec2::of(0i32)
-    }
 }
 
 /// Convenience methods on every [`Widget`].
@@ -1616,8 +1626,8 @@ pub trait WidgetMethods: Widget {
     }
 
     /// Returns true when this widget is anywhere on the current focus chain.
-    fn is_focus_chain(&self) -> bool {
-        super::runtime::is_focus_chain(self.get_id())
+    fn in_focus_chain(&self) -> bool {
+        super::runtime::in_focus_chain(self.get_id())
     }
 
     /// Returns the content size.
@@ -2271,11 +2281,11 @@ fn resolve_cached_path(widget: &dyn Widget, id: WidgetId) -> Option<WidgetPath> 
     }
 }
 
-fn find_cached<'a>(widget: &'a dyn Widget, id: WidgetId) -> Option<&'a dyn Widget> {
+fn find_cached(widget: &dyn Widget, id: WidgetId) -> Option<&dyn Widget> {
     resolve_cached_path(widget, id)?.get(widget)
 }
 
-fn find_cached_mut<'a>(widget: &'a mut dyn Widget, id: WidgetId) -> Option<&'a mut dyn Widget> {
+fn find_cached_mut(widget: &mut dyn Widget, id: WidgetId) -> Option<&mut dyn Widget> {
     let path = resolve_cached_path(widget, id)?;
     walk_path_mut(widget, path.as_slice())
 }
@@ -2319,4 +2329,3 @@ impl std::fmt::Display for dyn Widget {
         self.debug(f)
     }
 }
-

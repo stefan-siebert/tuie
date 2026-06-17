@@ -11,6 +11,7 @@ use super::kitty::{PixelSlot, PlacementInner};
 
 /// Error returned when constructing an [`ImageSource`](super::ImageSource) from encoded bytes fails.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum ImageSourceError {
     /// The byte signature did not match any known format.
     UnknownFormat,

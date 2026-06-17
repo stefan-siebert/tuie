@@ -24,7 +24,7 @@ impl<'a> TabIterator<'a> {
         if let Some(tabstop) = tabstop {
             let mut iter = text.split('\t');
             let content = iter.next().unwrap();
-            let width = tuie::terminal_display_width(content) as u64;
+            let width = tuie::display_width(content) as u64;
             Self {
                 col: col.wrapping_add(width as u8),
                 tabstop,
@@ -38,7 +38,7 @@ impl<'a> TabIterator<'a> {
                 iter: Some(iter),
             }
         } else {
-            let width = tuie::terminal_display_width(text) as u64;
+            let width = tuie::display_width(text) as u64;
             Self {
                 col: col.wrapping_add(width as u8),
                 tabstop: 0,
@@ -63,7 +63,7 @@ impl<'a> Iterator for TabIterator<'a> {
         };
         let upcoming = iter.next().map(|content| {
             let tab_size = self.tabstop - self.col % self.tabstop;
-            let width = tuie::terminal_display_width(content) as u64;
+            let width = tuie::display_width(content) as u64;
             self.col = self.col
                 .wrapping_add(width as u8)
                 .wrapping_add(tab_size);
@@ -81,12 +81,7 @@ impl<'a> Iterator for TabIterator<'a> {
 }
 
 /// Click event reporting the byte range of the clicked grapheme.
-pub struct TextClickEvent {
-    /// Start byte index of the clicked grapheme in the underlying text.
-    pub start_index: usize,
-    /// End byte index of the clicked grapheme in the underlying text.
-    pub end_index: usize,
-}
+pub struct TextClickEvent(pub std::ops::Range<usize>);
 
 /// Styled text widget with configurable overflow, alignment, and tab expansion.
 pub struct Text {
@@ -105,8 +100,8 @@ pub struct Text {
 
 impl Text {
     fn flow_size(&self, allocated: Vec2<u16>) -> Vec2<u16> {
-        if !self.overflow.wrap {
-            if self.overflow.truncate.is_some() {
+        if !self.overflow.wraps() {
+            if self.overflow.get_truncate().is_some() {
                 return Vec2::new(
                     self.content_size.x.min(allocated.x),
                     self.content_size.y.min(allocated.y),
@@ -127,7 +122,7 @@ impl Text {
         let mut num_lines: u16 = 0;
         let mut max_width: u16 = 0;
         for line in self.overflow.iter_lines(
-            &self.content.text,
+            self.content.as_str(),
             Vec2::new(content_width as usize, usize::MAX),
             self.align,
             self.tabstop(),
@@ -143,7 +138,7 @@ impl Text {
 
     fn tabstop(&self) -> Option<u8> {
         let config = tuie::config::get();
-        if config.expandtabs {
+        if config.expand_tabs {
             Some(config.tabstop)
         } else {
             None
@@ -168,7 +163,7 @@ impl Widget for Text {
         let mut lines = 0u16;
         let mut width = 0u16;
         let tabstop = self.tabstop();
-        for line in self.content.text.split('\n') {
+        for line in self.content.as_str().split('\n') {
             lines = lines.saturating_add(1);
             let line_width = TabIterator::new(0, tabstop, line)
                 .fold(0u64, |acc, part| acc + part.width + part.leftpad as u64);
@@ -176,7 +171,7 @@ impl Widget for Text {
         }
         self.content_size = Vec2::new(width, lines);
 
-        let min_size = if self.overflow.wrap || self.overflow.truncate.is_some() {
+        let min_size = if self.overflow.wraps() || self.overflow.get_truncate().is_some() {
             Vec2::new(0, self.content_size.y)
         } else {
             self.content_size
@@ -199,27 +194,18 @@ impl Widget for Text {
     fn render(&self, mut ctx: RenderContext) {
         let content = &self.content;
         let size = self.layout.rect.size;
-        let fallback_span = [Span::new(content.text.len() + 1, Style::new())];
-        let spans_slice: &[Span] = if content.spans.is_empty() {
-            &fallback_span
-        } else {
-            &content.spans
-        };
-        let mut span_iter = spans_slice.iter();
-        let mut span = span_iter.next().unwrap();
-        let mut span_offset = 0;
 
         let visible_y_start =
-            (ctx.position.y as i32 - ctx.anchor.y).max(0) as usize;
+            (ctx.pos.y as i32 - ctx.anchor.y).max(0) as usize;
         let visible_y_end =
-            ((ctx.position.y + ctx.physical_size.y) as i32 - ctx.anchor.y)
+            ((ctx.pos.y + ctx.physical_size.y) as i32 - ctx.anchor.y)
                 as usize;
 
-        let text = &content.text;
+        let text = content.as_str();
         let max_size = size.map(|a| a as usize);
         let tabstop = self.tabstop();
 
-        let skip_offset = if !self.overflow.wrap && visible_y_start > 0 {
+        let skip_offset = if !self.overflow.wraps() && visible_y_start > 0 {
             let mut text_offset = 0;
             for _ in 0..visible_y_start {
                 match text[text_offset..].find('\n') {
@@ -230,80 +216,62 @@ impl Widget for Text {
                     }
                 }
             }
-            while span_offset + span.len <= text_offset {
-                span_offset += span.len;
-                if let Some(next) = span_iter.next() {
-                    span = next;
-                } else {
-                    break;
-                }
-            }
             text_offset
         } else {
             0
         };
 
-        let iter = if skip_offset > 0 {
-            let mut iter = TextOverflowLineIterator::new(
+        let (iter, skip_rows) = if skip_offset > 0 {
+            let iter = TextOverflowLineIterator::new(
                 *self.overflow,
                 max_size,
                 &text[skip_offset..],
                 self.align,
                 tabstop,
             );
-            iter.offset = skip_offset;
-            iter.height = visible_y_start + 1;
-            iter
+            (iter, visible_y_start)
         } else {
-            self.overflow.iter_lines(text, max_size, self.align, tabstop)
+            (self.overflow.iter_lines(text, max_size, self.align, tabstop), 0)
         };
 
-        ctx.set_style(span.style);
-        for line in iter {
-            if line.y < visible_y_start {
-                let line_end = line.offset + line.content.len();
-                while span_offset + span.len <= line_end {
-                    span_offset += span.len;
-                    if let Some(next) = span_iter.next() {
-                        span = next;
-                    } else {
-                        break;
-                    }
+        let mut runs = content
+            .iter_chunks(skip_offset..)
+            .map({
+                let mut end = skip_offset;
+                move |(chunk, style)| {
+                    end += chunk.len();
+                    (end, style)
                 }
+            })
+            .peekable();
+        let mut run_at = move |pos: usize| {
+            while runs.next_if(|&(end, _)| end <= pos).is_some() {}
+            runs.peek().map_or_else(|| (usize::MAX, content.style_at(pos)), |&run| run)
+        };
+        for line in iter {
+            let y = line.y + skip_rows;
+            let offset = line.offset + skip_offset;
+            if y < visible_y_start {
                 continue;
             }
-            if line.y >= visible_y_end {
+            if y >= visible_y_end {
                 break;
             }
 
-            ctx.move_to(Vec2::new(line.pad_left as i32, line.y as i32));
-            if !self.overflow.wrap && self.align == Align::End {
+            ctx.move_to(Vec2::new(line.pad_left as i32, y as i32));
+            if !self.overflow.wraps() && self.align == Align::End {
+                ctx.set_style(run_at(offset).1);
                 ctx.write(line.marker);
             }
-            let mut line_progress = 0;
-            let mut span_progress = line.offset - span_offset;
-            while span_progress >= span.len {
-                span_offset += span.len;
-                span_progress -= span.len;
-                span = span_iter.next().unwrap();
-                ctx.set_style(span.style);
-            }
+            let line_end = offset + line.content.len();
+            let mut pos = offset;
             let mut col = 0;
-            while line_progress < line.content.len() {
-                while span_offset + span.len <= line.offset + line_progress {
-                    span_offset += span.len;
-                    span_progress = 0;
-                    span = span_iter.next().unwrap();
-                }
-                ctx.set_style(span.style);
-                let line_remaining = line.content.len() - line_progress;
-                let span_remaining = span.len - span_progress;
-                let chunk_size = std::cmp::min(span_remaining, line_remaining);
-                let chunk =
-                    &line.content[line_progress..line_progress + chunk_size];
-
-                let mut tab_iter = TabIterator::new(col, tabstop, chunk);
-                while let Some(part) = tab_iter.next() {
+            while pos < line_end {
+                let (run_end, style) = run_at(pos);
+                let chunk_end = run_end.min(line_end);
+                ctx.set_style(style);
+                let mut tab_iter = TabIterator::new(col, tabstop, &text[pos..chunk_end]);
+                for part in tab_iter.by_ref() {
                     for _ in 0..part.leftpad {
                         ctx.write(" ");
                     }
@@ -314,8 +282,7 @@ impl Widget for Text {
                         Some(mask) => {
                             let mut masked = String::new();
                             for grapheme in part.content.graphemes(true) {
-                                let width =
-                                    tuie::terminal_grapheme_width(grapheme) as usize;
+                                let width = tuie::grapheme_width(grapheme);
                                 for _ in 0..width {
                                     masked.push(mask);
                                 }
@@ -326,42 +293,23 @@ impl Widget for Text {
                     }
                 }
                 col = tab_iter.col;
-
-                span_progress += chunk_size;
-                line_progress += chunk_size;
+                pos = chunk_end;
             }
-            if self.overflow.wrap || self.align != Align::End {
+            if self.overflow.wraps() || self.align != Align::End {
                 if !line.marker.is_empty() {
                     ctx.set_style(Style::new());
                 }
                 ctx.write(line.marker);
             }
             if line.trailing_whitespace {
-                while span_offset + span.len <= line.offset + line_progress {
-                    span_offset += span.len;
-                    if let Some(next) = span_iter.next() {
-                        span = next;
-                    } else {
-                        break;
-                    }
-                }
-                ctx.set_style(span.style);
+                ctx.set_style(run_at(line_end).1);
                 ctx.write(" ");
             }
         }
 
-        while span_offset + span.len <= content.text.len() {
-            span_offset += span.len;
-            if let Some(next) = span_iter.next() {
-                span = next;
-            } else {
-                break;
-            }
-        }
-        if span_offset + span.len > content.text.len()
-            && span.style != Style::new()
-        {
-            ctx.set_style(span.style);
+        let eof_style = run_at(content.len()).1;
+        if eof_style != Style::new() {
+            ctx.set_style(eof_style);
             ctx.write(" ");
         }
     }
@@ -369,29 +317,27 @@ impl Widget for Text {
 
 impl TextBuffer for Text {
     fn len(&self) -> usize {
-        self.content.text.len()
+        self.content.len()
     }
 
-    fn is_char_boundary(&self, pos: usize) -> bool {
-        self.content.text.is_char_boundary(pos)
+    fn is_char_boundary(&self, index: usize) -> bool {
+        self.content.as_str().is_char_boundary(index)
     }
 
-    fn slice(&self, start: usize, end: usize) -> String {
-        self.content.text[start..end].to_string()
+    fn slice(&self, range: std::ops::Range<usize>) -> String {
+        self.content.as_str()[range].to_string()
     }
 
-    fn replace_range(&mut self, start: usize, end: usize, replacement: &str) {
-        self.content.text.replace_range(start..end, replacement);
-        self.content.spans.clear();
+    fn replace_range(&mut self, range: std::ops::Range<usize>, replacement: &str) {
+        self.content.replace_range(range, replacement);
         self.dirty_layout();
     }
 
     fn chunks(
         &self,
-        start: usize,
-        end: usize,
+        range: std::ops::Range<usize>,
     ) -> Box<dyn Iterator<Item = &str> + '_> {
-        Box::new(std::iter::once(&self.content.text[start..end]))
+        Box::new(std::iter::once(&self.content.as_str()[range]))
     }
 
     fn index_to_physical_pos(&self, index: usize) -> Vec2<usize> {
@@ -401,8 +347,8 @@ impl TextBuffer for Text {
 
 impl TextDocument for Text {
     type Cursor = TextCursor;
-    fn cursor(&self, pos: usize) -> TextCursor {
-        TextCursor { index: pos }
+    fn cursor(&self, index: usize) -> TextCursor {
+        TextCursor { index }
     }
 }
 
@@ -484,14 +430,14 @@ impl Text {
     ) -> Vec2<usize> {
         let content = &self.content;
         let size = self.layout.rect.size;
-        if index >= content.text.len() {
+        if index >= content.len() {
             for line in self.overflow.iter_lines(
-                &content.text,
+                content.as_str(),
                 size.map(|a| a as usize),
                 self.align,
                 self.tabstop(),
             ) {
-                if line.offset + line.content.len() == content.text.len()
+                if line.offset + line.content.len() == content.len()
                 {
                     let width =
                         TabIterator::new(0, self.tabstop(), line.content)
@@ -503,7 +449,7 @@ impl Text {
             }
         }
         for line in self.overflow.iter_lines(
-            &content.text,
+            content.as_str(),
             size.map(|a| a as usize),
             self.align,
             self.tabstop(),
@@ -522,7 +468,7 @@ impl Text {
                         if offset > index {
                             break;
                         }
-                        w += tuie::terminal_grapheme_width(grapheme) as usize;
+                        w += tuie::grapheme_width(grapheme);
                     }
                     break;
                 }
@@ -535,10 +481,7 @@ impl Text {
                     return Vec2::new(w, line.y);
                 }
                 if wrap_bias == Sign::Negative
-                    || content.text[line.offset + line.content.len()..]
-                        .chars()
-                        .next()
-                        == Some('\n')
+                    || content.as_str()[line.offset + line.content.len()..].starts_with('\n')
                 {
                     return Vec2::new(w, line.y);
                 }
@@ -550,7 +493,7 @@ impl Text {
 
     /// Maps a byte index to its physical (unwrapped) cell position.
     pub fn index_to_physical_pos(&self, index: usize) -> Vec2<usize> {
-        let text = &self.content.text;
+        let text = self.content.as_str();
         let index = index.min(text.len());
         let line_start = text[..index].rfind('\n').map_or(0, |i| i + 1);
         let y = text[..line_start].bytes().filter(|&b| b == b'\n').count();
@@ -565,17 +508,17 @@ impl Text {
     pub fn pos_to_index(&self, pos: Vec2<usize>) -> usize {
         let content = &self.content;
         for line in self.overflow.iter_lines(
-            &content.text,
+            content.as_str(),
             self.layout.rect.size.map(|a| a as usize),
             self.align,
             self.tabstop(),
         ) {
-            if line.y as usize == pos.y {
+            if line.y == pos.y {
                 let mut remaining = pos.x as i32 - line.pad_left as i32;
                 for part in TabIterator::new(
                     0,
                     self.tabstop(),
-                    &content.text
+                    &content.as_str()
                         [line.offset..line.offset + line.content.len()],
                 ) {
                     let mut offset = line.offset + part.offset;
@@ -588,7 +531,7 @@ impl Text {
                     } else {
                         for grapheme in part.content.graphemes(true) {
                             let width =
-                                tuie::terminal_grapheme_width(grapheme) as i32;
+                                tuie::grapheme_width(grapheme) as i32;
                             remaining -= width;
                             if remaining < 0 {
                                 return offset;
@@ -600,17 +543,17 @@ impl Text {
                 return line.offset + line.content.len();
             }
         }
-        content.text.len()
+        content.len()
     }
 
     /// Borrows the underlying text without styling.
     pub fn get_str(&self) -> &str {
-        &self.content.text
+        self.content.as_str()
     }
 
     /// Clones the underlying text without styling.
     pub fn get_string(&self) -> String {
-        self.content.text.clone()
+        self.content.as_str().to_string()
     }
 
     /// Clones the styled content.
@@ -628,9 +571,9 @@ impl Text {
         self.align(Align::Start)
     }
 
-    /// Builder shortcut for `.align(Align::Middle)`.
+    /// Builder shortcut for `.align(Align::Center)`.
     pub fn center(self: Box<Self>) -> Box<Self> {
-        self.align(Align::Middle)
+        self.align(Align::Center)
     }
 
     /// Builder shortcut for `.align(Align::End)`.
@@ -663,16 +606,16 @@ impl Text {
         self.overflow(TextOverflow::TRUNCATE)
     }
 
-    /// Applies `style` to the byte range `start..end`.
-    pub fn highlight(&mut self, start: usize, end: usize, style: Style) {
+    /// Applies `style` to the byte `range`.
+    pub fn highlight(&mut self, range: std::ops::Range<usize>, style: Style) {
         self.dirty_paint();
-        self.content.style_range(start..end, |s| *s = style);
+        self.content.style_range(range, |s| *s = style);
     }
 
     /// Clears all style spans, leaving the text unstyled.
     pub fn clear_highlight(&mut self) {
         self.dirty_paint();
-        self.content.spans.clear();
+        self.content.clear_styles();
     }
 }
 
@@ -721,8 +664,8 @@ impl Cursor for TextCursor {
         self.index
     }
 
-    fn set_index(&mut self, text: &Text, pos: usize) {
-        self.index = pos;
+    fn set_index(&mut self, text: &Text, index: usize) {
+        self.index = index;
         let len = text.len();
         while self.index > 0
             && self.index <= len
@@ -733,19 +676,19 @@ impl Cursor for TextCursor {
     }
 
     fn get_char(&self, text: &Text) -> char {
-        let content = &text.content;
-        if self.index >= content.text.len() {
+        let content = text.content.as_str();
+        if self.index >= content.len() {
             return '\0';
         }
-        content.text[self.index..]
+        content[self.index..]
             .chars()
             .next()
             .unwrap_or('\0')
     }
 
     fn next_char(&mut self, text: &Text) -> &mut Self {
-        let content = &text.content;
-        if let Some(ch) = content.text[self.index..].chars().next() {
+        let content = text.content.as_str();
+        if let Some(ch) = content[self.index..].chars().next() {
             self.index += ch.len_utf8();
         }
 
@@ -753,8 +696,8 @@ impl Cursor for TextCursor {
     }
 
     fn prev_char(&mut self, text: &Text) -> &mut Self {
-        let content = &text.content;
-        if let Some(ch) = content.text[..self.index].chars().next_back() {
+        let content = text.content.as_str();
+        if let Some(ch) = content[..self.index].chars().next_back() {
             self.index -= ch.len_utf8();
         }
 
@@ -762,8 +705,8 @@ impl Cursor for TextCursor {
     }
 
     fn next_grapheme(&mut self, text: &Text) -> &mut Self {
-        let content = &text.content;
-        if let Some(g) = content.text[self.index..].graphemes(true).next()
+        let content = text.content.as_str();
+        if let Some(g) = content[self.index..].graphemes(true).next()
         {
             self.index += g.len();
         }
@@ -772,9 +715,9 @@ impl Cursor for TextCursor {
     }
 
     fn prev_grapheme(&mut self, text: &Text) -> &mut Self {
-        let content = &text.content;
+        let content = text.content.as_str();
         if let Some(g) =
-            content.text[..self.index].graphemes(true).next_back()
+            content[..self.index].graphemes(true).next_back()
         {
             self.index -= g.len();
         }
@@ -784,8 +727,8 @@ impl Cursor for TextCursor {
 
     fn line_start(&mut self, text: &Text) -> &mut Self {
         if self.index > 0 {
-            let content = &text.content;
-            self.index = content.text[..self.index]
+            let content = text.content.as_str();
+            self.index = content[..self.index]
                 .rfind('\n')
                 .map(|i| i + 1)
                 .unwrap_or(0);
@@ -794,19 +737,19 @@ impl Cursor for TextCursor {
     }
 
     fn line_end(&mut self, text: &Text) -> &mut Self {
-        let content = &text.content;
-        self.index = content.text[self.index..]
+        let content = text.content.as_str();
+        self.index = content[self.index..]
             .find('\n')
             .map(|i| self.index + i)
-            .unwrap_or(content.text.len());
+            .unwrap_or(content.len());
 
         self
     }
 
     fn linewise_end(&mut self, text: &Text) -> &mut Self {
-        let content = &text.content;
-        let len = content.text.len();
-        if let Some(i) = content.text[self.index..].find('\n') {
+        let content = text.content.as_str();
+        let len = content.len();
+        if let Some(i) = content[self.index..].find('\n') {
             self.index = self.index + i + 1;
         } else {
             self.index = len + 1;
@@ -816,11 +759,11 @@ impl Cursor for TextCursor {
     }
 
     fn next_line_start(&mut self, text: &Text) -> &mut Self {
-        let content = &text.content;
-        if let Some(i) = content.text[self.index..].find('\n') {
+        let content = text.content.as_str();
+        if let Some(i) = content[self.index..].find('\n') {
             self.index = self.index + i + 1;
         } else {
-            self.index = content.text.len();
+            self.index = content.len();
         }
 
         self
@@ -828,15 +771,15 @@ impl Cursor for TextCursor {
 
     fn prev_line_start(&mut self, text: &Text) -> &mut Self {
         if self.index > 0 {
-            let content = &text.content;
-            let line_start = content.text[..self.index]
+            let content = text.content.as_str();
+            let line_start = content[..self.index]
                 .rfind('\n')
                 .map(|i| i + 1)
                 .unwrap_or(0);
             if line_start == 0 {
                 self.index = 0;
             } else {
-                self.index = content.text[..line_start - 1]
+                self.index = content[..line_start - 1]
                     .rfind('\n')
                     .map(|i| i + 1)
                     .unwrap_or(0);
@@ -846,8 +789,8 @@ impl Cursor for TextCursor {
     }
 
     fn find_char_forward(&mut self, text: &Text, ch: char) -> &mut Self {
-        let content = &text.content;
-        if let Some(i) = content.text[self.index..].find(ch) {
+        let content = text.content.as_str();
+        if let Some(i) = content[self.index..].find(ch) {
             self.index += i;
         }
 
@@ -855,8 +798,8 @@ impl Cursor for TextCursor {
     }
 
     fn find_char_backward(&mut self, text: &Text, ch: char) -> &mut Self {
-        let content = &text.content;
-        if let Some(i) = content.text[..self.index].rfind(ch) {
+        let content = text.content.as_str();
+        if let Some(i) = content[..self.index].rfind(ch) {
             self.index = i;
         }
 
@@ -864,8 +807,8 @@ impl Cursor for TextCursor {
     }
 
     fn find_str_forward(&mut self, text: &Text, needle: &str) -> &mut Self {
-        let content = &text.content;
-        if let Some(i) = content.text[self.index..].find(needle) {
+        let content = text.content.as_str();
+        if let Some(i) = content[self.index..].find(needle) {
             self.index += i;
         }
 
@@ -873,8 +816,8 @@ impl Cursor for TextCursor {
     }
 
     fn find_str_backward(&mut self, text: &Text, needle: &str) -> &mut Self {
-        let content = &text.content;
-        if let Some(i) = content.text[..self.index].rfind(needle) {
+        let content = text.content.as_str();
+        if let Some(i) = content[..self.index].rfind(needle) {
             self.index = i;
         }
 
@@ -882,8 +825,8 @@ impl Cursor for TextCursor {
     }
 
     fn matches(&self, text: &Text, needle: &str) -> bool {
-        let content = &text.content;
-        content.text[self.index..].starts_with(needle)
+        let content = text.content.as_str();
+        content[self.index..].starts_with(needle)
     }
 
     fn document_start(&mut self) -> &mut Self {

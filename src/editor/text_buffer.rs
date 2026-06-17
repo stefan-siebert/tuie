@@ -7,19 +7,22 @@ use crate::editor::char_class::{CharClass, GetCharClass};
 pub trait TextBuffer {
     /// Returns the total length in bytes.
     fn len(&self) -> usize;
-    /// Returns whether `pos` is a `char` boundary.
-    fn is_char_boundary(&self, pos: usize) -> bool;
-    /// Returns the substring `start..end` as a new [`String`].
-    fn slice(&self, start: usize, end: usize) -> String;
+    /// Returns whether the buffer is empty.
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+    /// Returns whether `index` is a `char` boundary.
+    fn is_char_boundary(&self, index: usize) -> bool;
+    /// Returns the substring `range` as a new [`String`].
+    fn slice(&self, range: std::ops::Range<usize>) -> String;
 
-    /// Replaces bytes `[start..end)` with `replacement`.
-    fn replace_range(&mut self, start: usize, end: usize, replacement: &str);
+    /// Replaces the byte `range` with `replacement`.
+    fn replace_range(&mut self, range: std::ops::Range<usize>, replacement: &str);
 
-    /// Iterates contiguous chunks covering `start..end`.
+    /// Iterates contiguous chunks covering `range`.
     fn chunks(
         &self,
-        start: usize,
-        end: usize,
+        range: std::ops::Range<usize>,
     ) -> Box<dyn Iterator<Item = &str> + '_>;
 
     /// Returns the logical line/column position of `index`, ignoring soft-wrap.
@@ -34,8 +37,8 @@ pub trait Cursor: Sized + Clone + Eq + Ord {
     /// Returns the byte offset of this cursor.
     fn get_index(&self) -> usize;
 
-    /// Moves the cursor to byte offset `pos`.
-    fn set_index(&mut self, text: &Self::Text, pos: usize);
+    /// Moves the cursor to byte offset `index`.
+    fn set_index(&mut self, text: &Self::Text, index: usize);
 
     /// Returns the char at the current position, or `'\0'` at end of file.
     fn get_char(&self, text: &Self::Text) -> char;
@@ -142,7 +145,7 @@ pub trait CursorMethods: Cursor {
     }
 
     /// Moves to the document start or end depending on `sign`.
-    fn move_document_end(&mut self, text: &Self::Text, sign: Sign) -> &mut Self {
+    fn move_document_edge(&mut self, text: &Self::Text, sign: Sign) -> &mut Self {
         match sign {
             Sign::Positive => self.document_end(text),
             Sign::Negative => self.document_start(),
@@ -150,7 +153,7 @@ pub trait CursorMethods: Cursor {
     }
 
     /// Moves to the line start or end depending on `sign`.
-    fn move_line_end(&mut self, text: &Self::Text, sign: Sign) -> &mut Self {
+    fn move_line_edge(&mut self, text: &Self::Text, sign: Sign) -> &mut Self {
         match sign {
             Sign::Positive => self.line_end(text),
             Sign::Negative => self.line_start(text),
@@ -232,11 +235,6 @@ pub trait CursorMethods: Cursor {
         }
     }
 
-    /// Moves the cursor one grapheme in `sign`, returning whether it moved.
-    fn cursor_step(&mut self, text: &Self::Text, sign: Sign) -> bool {
-        self.clone() != *self.move_grapheme(text, sign)
-    }
-
     /// Moves the cursor one word in `sign`.
     fn move_word(&mut self, text: &Self::Text, sign: Sign) {
         self.skip_whitespace(text, sign);
@@ -264,7 +262,7 @@ pub trait CursorMethods: Cursor {
     }
 
     /// Returns the byte range of the word under the cursor.
-    fn get_word_under_cursor(&self, text: &Self::Text) -> Option<(usize, usize)> {
+    fn get_word_under_cursor(&self, text: &Self::Text) -> Option<std::ops::Range<usize>> {
         let mut cursor = self.clone();
         let ch = cursor.get_char(text);
         if ch == '\0' {
@@ -292,7 +290,7 @@ pub trait CursorMethods: Cursor {
             }
             cursor.next_char(text);
         }
-        Some((start, cursor.get_index()))
+        Some(start..cursor.get_index())
     }
 }
 
@@ -316,6 +314,6 @@ impl<T: TextBuffer + TextLayout + ?Sized> TextContent for T {}
 pub trait TextDocument: TextContent + 'static {
     /// The cursor type for this document.
     type Cursor: Cursor<Text = Self>;
-    /// Returns a cursor at byte offset `pos`.
-    fn cursor(&self, pos: usize) -> Self::Cursor;
+    /// Returns a cursor at byte offset `index`.
+    fn cursor(&self, index: usize) -> Self::Cursor;
 }

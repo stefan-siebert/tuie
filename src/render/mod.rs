@@ -161,16 +161,16 @@ impl GridCellStyle {
     };
 
     fn apply(&mut self, style: &Style) {
-        if let Some(fg) = style.fg {
+        if let Some(fg) = style.get_fg() {
             self.fg = fg;
         }
-        if let Some(bg) = style.bg {
+        if let Some(bg) = style.get_bg() {
             self.bg = bg;
         }
-        if let Some(uc) = style.underline_color {
+        if let Some(uc) = style.get_underline_color() {
             self.underline_color = uc;
         }
-        if let Some(u) = style.underline {
+        if let Some(u) = style.get_underline() {
             self.underline = u;
         }
         let mask = style.get_attrs_mask();
@@ -225,9 +225,8 @@ union GlyphData {
     index: u32,
 }
 
-/// One cell in the renderer's grid.
 #[derive(Clone, Copy)]
-pub struct GridCell {
+pub(crate) struct GridCell {
     style: GridCellStyle,
     flags: GridCellFlags,
     glyph_len: u8,
@@ -277,29 +276,6 @@ impl GridCell {
             && self.glyph(self_graphemes) == other.glyph(other_graphemes)
     }
 
-    /// Sets the glyph from a single char without grapheme or width measurement.
-    ///
-    /// # Safety
-    ///
-    /// `c` must be a single-cell-wide non-control character.
-    #[inline]
-    pub unsafe fn set_glyph_unchecked(&mut self, c: char) {
-        self.set_glyph_char(c);
-    }
-
-    /// Sets the glyph by recording an `idx`/`len` pair into the grapheme buffer.
-    ///
-    /// # Safety
-    ///
-    /// `len` must be `> 4`, `[idx, idx+len)` must be a valid single-cell-wide UTF-8 cluster in the
-    /// grapheme buffer, and the `WIDE` flag must be correct.
-    #[inline]
-    pub unsafe fn set_glyph_indexed_unchecked(&mut self, idx: u32, len: u8) {
-        self.glyph.index = idx;
-        self.glyph_len = len;
-    }
-
-    /// Clears the `WIDE` and `INVALID` flags on this cell.
     #[inline]
     pub fn mark_overwritten(&mut self) {
         let was_invalid = self.flags.0 & GridCellFlags::INVALID != 0;
@@ -368,7 +344,7 @@ impl<'a> RowWriter<'a> {
         } else {
             glyph
         };
-        let wide = terminal_grapheme_width(glyph) > 1;
+        let wide = grapheme_width(glyph) > 1;
         let mut template = GridCell::DEFAULT;
         template.set_glyph(glyph, self.graphemes);
         template.style.apply(style);
@@ -426,7 +402,7 @@ impl<'a> RowWriter<'a> {
             if c == '\n' {
                 break;
             }
-            let w = terminal_grapheme_width(grapheme) as usize;
+            let w = grapheme_width(grapheme);
             self.cell(col).grapheme(grapheme);
             col += w;
         }
@@ -480,7 +456,7 @@ impl CellWriter<'_> {
         if s.len() == 1 && s.as_bytes()[0].is_ascii_control() {
             return self.glyph(s.as_bytes()[0] as char);
         }
-        let wide = terminal_grapheme_width(s) > 1;
+        let wide = grapheme_width(s) > 1;
         unsafe { self.grapheme_unchecked(wide, s) }
     }
 
@@ -546,7 +522,7 @@ impl CellWriter<'_> {
         match style.get_blend() {
             Some(b) if b < 100 => {
                 let reversed = style.has_reverse();
-                let overlay = style.overlay_color();
+                let overlay = style.get_overlay_color();
                 resolve_dim(&mut cell.style);
                 let prev = cell.style.visible_bg();
                 cell.style.apply(style);
@@ -593,7 +569,7 @@ impl CellWriter<'_> {
 
 pub(crate) struct CtxSnapshot {
     pub anchor: Vec2<i32>,
-    pub position: Vec2<u16>,
+    pub pos: Vec2<u16>,
     pub physical_size: Vec2<u16>,
     pub size: Vec2<u16>,
     pub viewport_pos: Vec2<u16>,
@@ -626,10 +602,10 @@ pub(crate) struct QueuedEntry {
     pub seq: u64,
     pub parent_screen_pos_px: Vec2<i32>,
     /// Viewport offset from parent's grid origin at queue time, in cells.
-    /// Only stored for `Kind::Offset` entries — `parent_grid_origin_cells` is
+    /// Only stored for `Kind::Offset` entries. `parent_grid_origin_cells` is
     /// repurposed (set to 0) for those, so the queue-time origin isn't
     /// otherwise recoverable. Z/Layer/Popup entries derive this at read time
-    /// from `snapshot.position - parent_grid_origin_cells`.
+    /// from `snapshot.pos - parent_grid_origin_cells`.
     #[cfg(feature = "gui")]
     pub cell_pos_in_parent: Vec2<i32>,
     pub parent_grid_origin_cells: Vec2<i32>,
@@ -660,7 +636,7 @@ pub(crate) struct DrainCtx {
 }
 
 /// Double-buffered cell grid backing [`GridRenderer`].
-pub struct GridRendererState {
+struct GridRendererState {
     cells: (Vec<GridCell>, Vec<GridCell>),
     graphemes: (Vec<u8>, Vec<u8>),
     size: Vec2<u16>,
@@ -724,8 +700,8 @@ fn glyph_dirty_cols(glyph: &str, is_wide: bool, current: i32) -> i32 {
     }
 }
 
-/// Returns the terminal cell width of a single grapheme cluster.
-pub fn terminal_grapheme_width(grapheme: &str) -> u8 {
+/// Returns the display cell width of a single grapheme cluster.
+pub fn grapheme_width(grapheme: &str) -> usize {
     let bytes = grapheme.as_bytes();
     if bytes.len() == 1 && bytes[0] < 0x80 {
         return if bytes[0] < 0x20 || bytes[0] == 0x7F {
@@ -745,10 +721,10 @@ pub fn terminal_grapheme_width(grapheme: &str) -> u8 {
     }
 }
 
-/// Returns the sum of [`terminal_grapheme_width`] for every grapheme in `text`.
-pub fn terminal_display_width(text: &str) -> usize {
+/// Returns the sum of [`grapheme_width`] for every grapheme in `text`.
+pub fn display_width(text: &str) -> usize {
     text.graphemes(true)
-        .fold(0, |acc, grapheme| acc + terminal_grapheme_width(grapheme) as usize)
+        .fold(0, |acc, grapheme| acc + grapheme_width(grapheme))
 }
 
 impl GridRendererState {
@@ -851,8 +827,8 @@ impl GridRendererState {
                 if x as i32 + dirty_cols >= self.size.x as i32 {
                     current_line = u16::MAX;
                 }
-                dirty_cols -= width as i32;
-                cols_until_last_cell -= width as i32;
+                dirty_cols -= width;
+                cols_until_last_cell -= width;
                 x += width as u16;
                 i += width as usize;
             }
@@ -875,9 +851,15 @@ impl GridRendererState {
     }
 }
 
-/// Widget-tree renderer backed by a [`GridRendererState`].
+/// Widget-tree renderer backed by a double-buffered cell grid.
 pub struct GridRenderer {
     state: GridRendererState,
+}
+
+impl Default for GridRenderer {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl GridRenderer {
@@ -955,7 +937,7 @@ impl GridRenderer {
                 raw_writer: &mut *raw_writer,
                 anchor: entry.snapshot.anchor,
                 cursor: Vec2::of(0i32),
-                position: entry.snapshot.position,
+                pos: entry.snapshot.pos,
                 physical_size: entry.snapshot.physical_size,
                 size: entry.snapshot.size,
                 viewport_pos: entry.snapshot.viewport_pos,
@@ -988,7 +970,7 @@ impl GridRenderer {
             cursor: Vec2::of(0i32),
             base: base_style,
             style: base_style,
-            position: Vec2::of(0u16),
+            pos: Vec2::of(0u16),
             anchor: Vec2::of(0i32),
         }
     }
@@ -1063,7 +1045,7 @@ impl GridRenderer {
             }
         }
 
-        let snap_pos = entry.snapshot.position;
+        let snap_pos = entry.snapshot.pos;
         let snap_pos_i = Vec2::new(snap_pos.x as i32, snap_pos.y as i32);
         let prev_active_seq = self.state.active_seq.replace(entry.seq);
         let prev_drain = self.state.drain_ctx;
@@ -1082,7 +1064,7 @@ impl GridRenderer {
             raw_writer: &mut *raw_writer,
             anchor,
             cursor: Vec2::of(0i32),
-            position: snap_pos,
+            pos: snap_pos,
             physical_size: entry.snapshot.physical_size,
             size: entry.snapshot.size,
             viewport_pos: snap_pos,
@@ -1197,7 +1179,7 @@ pub struct RenderContext<'a> {
     /// The cursor offset within this region in local coordinates.
     pub cursor: Vec2<i32>,
     /// The screen-space top-left of the visible clip rect.
-    pub position: Vec2<u16>,
+    pub pos: Vec2<u16>,
     /// The visible clip size in cells.
     pub physical_size: Vec2<u16>,
     /// The virtual region size in cells.
@@ -1221,7 +1203,7 @@ impl<'a> RenderContext<'a> {
         self.set_style(child_style);
         if !self.resolve_inherited_reverse(&child_style) {
             let blend = self.style.get_blend().unwrap_or(100);
-            if child_style.overlay_color().is_none() && blend < 100 {
+            if child_style.get_overlay_color().is_none() && blend < 100 {
                 self.style.set_overlay_color(None);
             }
         }
@@ -1233,11 +1215,11 @@ impl<'a> RenderContext<'a> {
         let child_owns_reverse =
             child_style.get_attrs_mask() & StyleAttribute::Reverse as u8 != 0;
         if self.style.has_reverse() && !child_owns_reverse {
-            let visible_bg = self.style.fg.unwrap_or(Color::Foreground);
-            let visible_fg = self.style.bg.unwrap_or(Color::Background);
+            let visible_bg = self.style.get_fg().unwrap_or(Color::Foreground);
+            let visible_fg = self.style.get_bg().unwrap_or(Color::Background);
             self.style.set_reverse(false);
-            self.style.fg = Some(visible_fg);
-            self.style.bg = Some(visible_bg);
+            self.style.set_fg(Some(visible_fg));
+            self.style.set_bg(Some(visible_bg));
             return true;
         }
         false
@@ -1247,7 +1229,7 @@ impl<'a> RenderContext<'a> {
         self.move_to(pos);
         let render_size = child.get_rect_size();
         let child_style = child.get_style();
-        let parent_pos = self.position;
+        let parent_pos = self.pos;
         let parent_phys = self.physical_size;
         let mut region = self.region(render_size);
         region.apply_child_style(child_style);
@@ -1273,7 +1255,7 @@ impl<'a> RenderContext<'a> {
         });
         let snapshot = CtxSnapshot {
             anchor: region.anchor,
-            position: snap_pos,
+            pos: snap_pos,
             physical_size: snap_size,
             size: region.size,
             viewport_pos: region.viewport_pos,
@@ -1286,8 +1268,8 @@ impl<'a> RenderContext<'a> {
         let seq = region.state.next_seq();
         let inherited_clip = region.state.drain_ctx.parent_clip_screen_px;
         let parent_clip_screen_px = match kind {
-            Kind::Layer => crate::runtime::get_terminal_info()
-                .and_then(|i| i.cell_px)
+            Kind::Layer => crate::get_runtime_info()
+                .cell_size
                 .map(|cp| {
                     let off = Vec2::new(parent_pos.x as i32, parent_pos.y as i32)
                         - parent_grid_origin_cells;
@@ -1358,7 +1340,7 @@ impl<'a> RenderContext<'a> {
 
     /// Fills this region with the active background color.
     pub fn clear(&mut self) {
-        let overlay = self.style.overlay_color();
+        let overlay = self.style.get_overlay_color();
         if overlay.is_none() {
             return;
         }
@@ -1366,7 +1348,7 @@ impl<'a> RenderContext<'a> {
         if blend == 0 {
             return;
         }
-        let position = self.position.map(|n| n as i32);
+        let position = self.pos.map(|n| n as i32);
         let y_start = std::cmp::max(position.y, 0) as usize;
         let y_end = std::cmp::min(
             position.y + self.physical_size.y as i32,
@@ -1374,7 +1356,7 @@ impl<'a> RenderContext<'a> {
         ) as usize;
         if blend >= 100 {
             let saved_cursor = self.cursor;
-            let local_x = self.position.x as i32 - self.anchor.x;
+            let local_x = self.pos.x as i32 - self.anchor.x;
             let style = self.style;
             for y_screen in y_start..y_end {
                 let local_y = y_screen as i32 - self.anchor.y;
@@ -1408,25 +1390,25 @@ impl<'a> RenderContext<'a> {
                 }
             }
             if self.style.has_reverse() {
-                self.style.fg = None;
-                self.base.fg = None;
+                self.style.set_fg(None);
+                self.base.set_fg(None);
             } else {
-                self.style.bg = None;
-                self.base.bg = None;
+                self.style.set_bg(None);
+                self.base.set_bg(None);
             }
         }
     }
 
     /// Fills every cell in this region with `glyph` using the active style.
     pub fn fill(&mut self, glyph: &str) {
-        let position = self.position.map(|n| n as i32);
+        let position = self.pos.map(|n| n as i32);
         let y_start = std::cmp::max(position.y, 0);
         let y_end = std::cmp::min(
             position.y + self.physical_size.y as i32,
             self.state.cells_height as i32,
         );
         let saved_cursor = self.cursor;
-        let local_x = self.position.x as i32 - self.anchor.x;
+        let local_x = self.pos.x as i32 - self.anchor.x;
         let style = self.style;
         for y_screen in y_start..y_end {
             let local_y = y_screen - self.anchor.y;
@@ -1446,12 +1428,12 @@ impl<'a> RenderContext<'a> {
             return;
         }
         let position = self.anchor + self.cursor;
-        if position.x + self.size.x as i32 <= self.position.x as i32 {
+        if position.x + self.size.x as i32 <= self.pos.x as i32 {
             return;
         }
 
         let style = self.style;
-        let overlay_bg = style.overlay_color();
+        let overlay_bg = style.get_overlay_color();
 
         let mut row = self.row_writer();
         let range = row.get_range();
@@ -1469,7 +1451,7 @@ impl<'a> RenderContext<'a> {
             if c == '\n' {
                 break;
             }
-            let w = terminal_grapheme_width(grapheme) as usize;
+            let w = grapheme_width(grapheme);
             advance += w as i32;
 
             let (g, w) = if col + w > range.end {
@@ -1487,14 +1469,13 @@ impl<'a> RenderContext<'a> {
             }
             col += w;
         }
-        drop(row);
         self.cursor.x += advance;
     }
 
     /// Returns a [`RowWriter`] for the visible cells in the current row.
     pub fn row_writer(&mut self) -> RowWriter<'_> {
         let position = self.anchor + self.cursor;
-        let (clip_pos, clip_size) = (self.position, self.physical_size);
+        let (clip_pos, clip_size) = (self.pos, self.physical_size);
         let clip_x_start = clip_pos.x as i32;
         let clip_x_end = (clip_pos.x + clip_size.x) as i32;
         if position.y < clip_pos.y as i32
@@ -1544,26 +1525,26 @@ impl<'a> RenderContext<'a> {
 
         let unclamped = self.anchor + self.cursor;
 
-        let position = Axis2D::map(|a| {
+        let pos = Axis2D::map(|a| {
             unclamped[a].clamp(
-                self.position[a] as i32,
-                (self.position[a] + self.physical_size[a]) as i32,
+                self.pos[a] as i32,
+                (self.pos[a] + self.physical_size[a]) as i32,
             ) as u16
         });
 
         size = Axis2D::map(|a| {
-            let lost = (position[a] as i32 - unclamped[a]).max(0) as u16;
+            let lost = (pos[a] as i32 - unclamped[a]).max(0) as u16;
             size[a]
                 .saturating_sub(lost)
-                .min(self.physical_size[a] - (position[a] - self.position[a]))
+                .min(self.physical_size[a] - (pos[a] - self.pos[a]))
         });
 
         let physical_size = Axis2D::map(|a| {
-            let child_end = position[a].saturating_add(size[a]);
-            let parent_logical_end = self.position[a].saturating_add(self.size[a]);
-            let parent_phys_end = self.position[a].saturating_add(self.physical_size[a]);
+            let child_end = pos[a].saturating_add(size[a]);
+            let parent_logical_end = self.pos[a].saturating_add(self.size[a]);
+            let parent_phys_end = self.pos[a].saturating_add(self.physical_size[a]);
             if child_end >= parent_logical_end {
-                parent_phys_end.saturating_sub(position[a])
+                parent_phys_end.saturating_sub(pos[a])
             } else {
                 size[a]
             }
@@ -1576,7 +1557,7 @@ impl<'a> RenderContext<'a> {
             style: self.style,
             base: self.style,
             anchor: self.anchor + self.cursor,
-            position,
+            pos,
             physical_size,
             size: virtual_size,
             viewport_pos: self.viewport_pos,
@@ -1587,7 +1568,7 @@ impl<'a> RenderContext<'a> {
     /// Returns a sub-context like [`region`](Self::region) with the viewport reset to this rect.
     pub fn viewport(&'_ mut self, size: Vec2<u16>) -> RenderContext<'_> {
         let mut ctx = self.region(size);
-        ctx.viewport_pos = ctx.position;
+        ctx.viewport_pos = ctx.pos;
         ctx.viewport_size = ctx.physical_size;
         ctx
     }
@@ -1676,7 +1657,7 @@ impl<'a> RenderContext<'a> {
         });
         let snapshot = CtxSnapshot {
             anchor: region.anchor,
-            position: snap_pos,
+            pos: snap_pos,
             physical_size: snap_size,
             size: region.size,
             viewport_pos: region.viewport_pos,
@@ -1721,8 +1702,8 @@ impl<'a> RenderContext<'a> {
         let unclamped = self.anchor + self.cursor;
         let viewport_pos = Axis2D::map(|a| {
             unclamped[a].clamp(
-                self.position[a] as i32,
-                (self.position[a] + self.physical_size[a]) as i32,
+                self.pos[a] as i32,
+                (self.pos[a] + self.physical_size[a]) as i32,
             ) as u16
         });
         let overflow = Axis2D::map(|a| {
@@ -1730,9 +1711,9 @@ impl<'a> RenderContext<'a> {
                 return 0u16;
             }
             let viewport_end = unclamped[a].saturating_add(viewport_size[a] as i32);
-            let parent_logical_end = (self.position[a] as i32)
+            let parent_logical_end = (self.pos[a] as i32)
                 .saturating_add(self.size[a] as i32);
-            let parent_phys_end = (self.position[a] as i32)
+            let parent_phys_end = (self.pos[a] as i32)
                 .saturating_add(self.physical_size[a] as i32);
             if viewport_end >= parent_logical_end && parent_phys_end > parent_logical_end {
                 1u16
@@ -1744,7 +1725,7 @@ impl<'a> RenderContext<'a> {
             let lost = (viewport_pos[a] as i32 - unclamped[a]).max(0) as u16;
             let cap = self.physical_size[a]
                 .saturating_add(overflow[a])
-                .saturating_sub(viewport_pos[a] - self.position[a]);
+                .saturating_sub(viewport_pos[a] - self.pos[a]);
             viewport_size[a]
                 .saturating_add(overflow[a])
                 .saturating_sub(lost)
@@ -1773,7 +1754,7 @@ impl<'a> RenderContext<'a> {
 
         let snapshot = CtxSnapshot {
             anchor: self.anchor + self.cursor + content_offset_clamped,
-            position: content_pos,
+            pos: content_pos,
             physical_size: content_size_clamped,
             size: content_size_clamped,
             viewport_pos: content_pos,

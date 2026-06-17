@@ -26,50 +26,53 @@ impl Chord {
     pub const fn new(trigger: Trigger, modifiers: Modifiers) -> Self {
         Self { trigger, modifiers }
     }
-}
 
-/// Parses a string of literal characters and `<...>` chord specs into a sequence of [`Chord`]s.
-pub fn parse_chords(s: &str) -> Vec<Chord> {
-    let mut chords = Vec::new();
-    let mut rest = s;
+    /// Parses literal characters and `<...>` chord specs into a sequence of chords.
+    pub fn parse_seq(s: &str) -> Result<Vec<Chord>, ChordParseError> {
+        let mut chords = Vec::new();
+        let mut rest = s;
 
-    while !rest.is_empty() {
-        let c = rest.chars().next().unwrap();
+        while !rest.is_empty() {
+            let c = rest.chars().next().unwrap();
 
-        if c == '\\' {
-            let after = &rest[1..];
-            if after.starts_with('<') {
-                if let Some((_, consumed)) = try_parse_chord_spec(after) {
-                    for ch in after[..consumed].chars() {
-                        chords.push(Chord::new(Trigger::Key(Key::Char(ch)), Modifiers::new()));
-                    }
-                    rest = &after[consumed..];
-                    continue;
-                }
-            }
-        }
-
-        if c == '<' {
-            if let Some((chord, consumed)) = try_parse_chord_spec(rest) {
-                chords.push(chord);
-                rest = &rest[consumed..];
+            if c == '\\' && rest[1..].starts_with('<') {
+                chords.push(Chord::new(Trigger::Key(Key::Char('<')), Modifiers::new()));
+                rest = &rest[2..];
                 continue;
             }
+
+            if c == '<' {
+                let Some(end) = rest.find('>') else {
+                    return Err(ChordParseError(format!("unclosed chord spec '{rest}', expected '>' (use '\\<' for a literal '<')")));
+                };
+                let content = &rest[1..end];
+                let Some(chord) = parse_chord_content(content) else {
+                    return Err(ChordParseError(format!("invalid chord spec '<{content}>' (use '\\<' for a literal '<')")));
+                };
+                chords.push(chord);
+                rest = &rest[end + 1..];
+                continue;
+            }
+
+            chords.push(Chord::new(Trigger::Key(Key::Char(c)), Modifiers::new()));
+            rest = &rest[c.len_utf8()..];
         }
 
-        chords.push(Chord::new(Trigger::Key(Key::Char(c)), Modifiers::new()));
-        rest = &rest[c.len_utf8()..];
+        Ok(chords)
     }
-
-    chords
 }
 
-fn try_parse_chord_spec(s: &str) -> Option<(Chord, usize)> {
-    debug_assert!(s.starts_with('<'));
-    let end = s.find('>')?;
-    let content = &s[1..end];
-    parse_chord_content(content).map(|chord| (chord, end + 1))
+/// Error returned when a string cannot be parsed as a [`Chord`] sequence.
+#[derive(Debug)]
+pub struct ChordParseError(String);
+
+impl std::fmt::Display for ChordParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
 }
+
+impl std::error::Error for ChordParseError {}
 
 fn parse_chord_content(content: &str) -> Option<Chord> {
     if content.is_empty() {
@@ -126,12 +129,11 @@ fn parse_key_name(name: &str) -> Option<Key> {
     }
     let mut chars = name.chars();
     let first = chars.next()?;
-    if first.to_ascii_lowercase() == 'f' {
-        if let Ok(n) = name[1..].parse::<u8>() {
-            if (1..=12).contains(&n) {
-                return Some(Key::F(n));
-            }
-        }
+    if first.eq_ignore_ascii_case(&'f')
+        && let Ok(n) = name[1..].parse::<u8>()
+        && (1..=12).contains(&n)
+    {
+        return Some(Key::F(n));
     }
     if chars.next().is_none() {
         Some(Key::Char(first))

@@ -4,7 +4,7 @@
 //! and the popup can never be closed by mouse. Regression test for that bug.
 
 use crate::prelude::*;
-use crate::test::TestTerminal;
+use crate::emulator::Emulator;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -31,11 +31,11 @@ impl DelegateWidget for DismissProbe {
 }
 
 fn mouse_down(pos: Vec2<i32>) -> RuntimeEvent {
+    // The runtime treats an injected event's `pos` as the window position and
+    // translates it to leaf-local during dispatch, so window coords go here.
     RuntimeEvent::Input(InputEvent {
         chord: Chord::new(Trigger::MouseDown(MouseButton::Left), Modifiers::new()),
-        mouse_pos: pos,
-        mouse_window_pos: pos,
-        mouse_window_subpx: Vec2::of(-1),
+        pos: pos.map(|v| v as f32),
         count: 1,
     })
 }
@@ -43,7 +43,7 @@ fn mouse_down(pos: Vec2<i32>) -> RuntimeEvent {
 #[test]
 fn outside_click_dismisses_nondismissible_popup() {
     let mut root = Pane::new().vertical().flex(1).child(Text::new().content("background"));
-    let mut term = TestTerminal::new(&mut *root, Vec2::new(80, 24));
+    let mut term = Emulator::new(&mut *root, Vec2::new(80, 24));
 
     let dismissed = Rc::new(RefCell::new(false));
     let content = Box::new(DismissProbe {
@@ -57,7 +57,7 @@ fn outside_click_dismisses_nondismissible_popup() {
     crate::open_popup(
         Popup::new(content as Box<dyn Widget>)
             .placement(Placement::center())
-            .dismissible(false),
+            .dismissible_if(false),
     );
 
     // One cycle drains the open queue and lays out / renders the centered card.

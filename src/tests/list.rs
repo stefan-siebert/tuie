@@ -1,6 +1,6 @@
 use chord_macro::chord;
 use tuie::prelude::*;
-use tuie::test::TestTerminal;
+use tuie::emulator::Emulator;
 
 fn make_list(len: usize) -> Box<List> {
     let mut list = List::new();
@@ -14,7 +14,7 @@ fn make_list(len: usize) -> Box<List> {
 #[test]
 fn renders_empty_list() {
     let mut list = make_list(0);
-    let term = TestTerminal::new(&mut *list, Vec2::new(8, 3));
+    let term = Emulator::new(&mut *list, Vec2::new(8, 3));
     term.assert_lines([
         "        ",
         "        ",
@@ -25,7 +25,7 @@ fn renders_empty_list() {
 #[test]
 fn renders_items_top_to_bottom() {
     let mut list = make_list(5);
-    let term = TestTerminal::new(&mut *list, Vec2::new(8, 3));
+    let term = Emulator::new(&mut *list, Vec2::new(8, 3));
     term.assert_lines([
         "item 0  ",
         "item 1  ",
@@ -36,7 +36,7 @@ fn renders_items_top_to_bottom() {
 #[test]
 fn scroll_method_advances_view() {
     let mut list = make_list(20);
-    let mut term = TestTerminal::new(&mut *list, Vec2::new(8, 3));
+    let mut term = Emulator::new(&mut *list, Vec2::new(8, 3));
     term.assert_lines([
         "item 0  ",
         "item 1  ",
@@ -60,7 +60,7 @@ fn repeated_page_scroll_keeps_viewport_filled() {
     // came up blank after enough scrolling (the hex viewer's "blank after the
     // 0xcf0 row" bug). Page far down and assert every visible line still renders.
     let mut list = make_list(2000);
-    let mut term = TestTerminal::new(&mut *list, Vec2::new(10, 5));
+    let mut term = Emulator::new(&mut *list, Vec2::new(10, 5));
     for _ in 0..30 {
         list.scroll_by(5); // page = viewport height
         term.update(&mut *list, &[RuntimeEvent::Resize(Vec2::new(10, 5))]);
@@ -79,7 +79,7 @@ fn repeated_page_scroll_keeps_viewport_filled() {
 #[test]
 fn mouse_scroll_down_advances_view() {
     let mut list = make_list(20);
-    let mut term = TestTerminal::new(&mut *list, Vec2::new(8, 3));
+    let mut term = Emulator::new(&mut *list, Vec2::new(8, 3));
     for _ in 0..3 {
         term.update(
             &mut *list,
@@ -99,7 +99,7 @@ fn mouse_scroll_down_advances_view() {
 #[test]
 fn ensure_visible_scrolls_far_index_into_view() {
     let mut list = make_list(50);
-    let mut term = TestTerminal::new(&mut *list, Vec2::new(8, 4));
+    let mut term = Emulator::new(&mut *list, Vec2::new(8, 4));
     list.ensure_visible(30);
     term.update(&mut *list, &[RuntimeEvent::Resize(Vec2::new(8, 4))]);
     let visible = list.get_visible_range();
@@ -111,7 +111,7 @@ fn ensure_visible_scrolls_far_index_into_view() {
 #[test]
 fn set_scroll_progress_jumps_to_end() {
     let mut list = make_list(100);
-    let mut term = TestTerminal::new(&mut *list, Vec2::new(8, 3));
+    let mut term = Emulator::new(&mut *list, Vec2::new(8, 3));
     list.set_scroll_progress(Axis2D::Y, 1.0);
     term.update(&mut *list, &[RuntimeEvent::Resize(Vec2::new(8, 3))]);
     let visible = list.get_visible_range();
@@ -126,7 +126,7 @@ fn set_scroll_progress_jumps_to_end() {
 #[test]
 fn resize_grows_visible_range() {
     let mut list = make_list(10);
-    let mut term = TestTerminal::new(&mut *list, Vec2::new(8, 2));
+    let mut term = Emulator::new(&mut *list, Vec2::new(8, 2));
     term.assert_lines([
         "item 0  ",
         "item 1  ",
@@ -144,7 +144,7 @@ fn resize_grows_visible_range() {
 #[test]
 fn set_len_shrink_clamps_anchor() {
     let mut list = make_list(50);
-    let mut term = TestTerminal::new(&mut *list, Vec2::new(8, 3));
+    let mut term = Emulator::new(&mut *list, Vec2::new(8, 3));
     list.set_scroll_progress(Axis2D::Y, 1.0);
     term.update(&mut *list, &[RuntimeEvent::Resize(Vec2::new(8, 3))]);
     list.set_item_count(4);
@@ -164,7 +164,7 @@ fn horizontal_orientation_lays_items_across() {
         Some(Text::new().content(idx.to_string()).min_width(2) as Box<dyn Widget>)
     });
     list.set_item_count(6);
-    let term = TestTerminal::new(&mut *list, Vec2::new(12, 1));
+    let term = Emulator::new(&mut *list, Vec2::new(12, 1));
     term.assert_lines([
         "0 1 2 3 4 5 ",
     ]);
@@ -173,7 +173,7 @@ fn horizontal_orientation_lays_items_across() {
 #[test]
 fn gap_inserts_blank_rows_between_items() {
     let mut list = make_list(3).gap(1);
-    let term = TestTerminal::new(&mut *list, Vec2::new(8, 5));
+    let term = Emulator::new(&mut *list, Vec2::new(8, 5));
     term.assert_lines([
         "item 0  ",
         "        ",
@@ -190,7 +190,7 @@ fn multiline_items_stack_vertically() {
         Some(Text::new().content(format!("a{}\nb{}", idx, idx)) as Box<dyn Widget>)
     });
     list.set_item_count(3);
-    let term = TestTerminal::new(&mut *list, Vec2::new(4, 6));
+    let term = Emulator::new(&mut *list, Vec2::new(4, 6));
     term.assert_lines([
         "a0  ",
         "b0  ",
@@ -208,7 +208,7 @@ fn multiline_item_clips_at_viewport_end() {
         Some(Text::new().content(format!("a{}\nb{}", idx, idx)) as Box<dyn Widget>)
     });
     list.set_item_count(3);
-    let term = TestTerminal::new(&mut *list, Vec2::new(4, 5));
+    let term = Emulator::new(&mut *list, Vec2::new(4, 5));
     term.assert_lines([
         "a0  ",
         "b0  ",
@@ -230,7 +230,7 @@ fn mixed_height_items_pack_tightly() {
         Some(Text::new().content(content) as Box<dyn Widget>)
     });
     list.set_item_count(3);
-    let term = TestTerminal::new(&mut *list, Vec2::new(4, 4));
+    let term = Emulator::new(&mut *list, Vec2::new(4, 4));
     term.assert_lines([
         "a0  ",
         "a1  ",
@@ -246,7 +246,7 @@ fn scroll_past_multiline_first_row() {
         Some(Text::new().content(format!("a{}\nb{}", idx, idx)) as Box<dyn Widget>)
     });
     list.set_item_count(3);
-    let mut term = TestTerminal::new(&mut *list, Vec2::new(4, 4));
+    let mut term = Emulator::new(&mut *list, Vec2::new(4, 4));
     list.scroll_by(1);
     term.update(&mut *list, &[RuntimeEvent::Resize(Vec2::new(4, 4))]);
     term.assert_lines([
@@ -267,7 +267,7 @@ fn invalidate_all_rerenders_items_with_new_context() {
         },
     );
     list.set_item_count(2);
-    let mut term = TestTerminal::new(&mut *list, Vec2::new(4, 2));
+    let mut term = Emulator::new(&mut *list, Vec2::new(4, 2));
     term.assert_lines([
         "a0  ",
         "a1  ",
@@ -294,7 +294,7 @@ fn pending_page_blocks_scroll_until_loaded() {
         },
     );
     list.set_item_count(20);
-    let mut term = TestTerminal::new(&mut *list, Vec2::new(8, 3));
+    let mut term = Emulator::new(&mut *list, Vec2::new(8, 3));
     term.assert_lines([
         "item 0  ",
         "item 1  ",

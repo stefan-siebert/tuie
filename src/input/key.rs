@@ -4,6 +4,7 @@ use crate::prelude::*;
 
 /// Logical keyboard key without modifiers.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[non_exhaustive]
 pub enum Key {
     /// Backspace.
     Backspace,

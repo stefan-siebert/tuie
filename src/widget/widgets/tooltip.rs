@@ -2,7 +2,7 @@
 
 use crate::prelude::*;
 use crate::runtime::popup::resolve_placement;
-use crate::widget::get_flow_output_size_layout;
+use crate::widget::flow_output_size;
 
 /// Floating overlay anchored to a child widget, positioned by a [`Placement`].
 pub struct Tooltip {
@@ -57,14 +57,12 @@ impl Widget for Tooltip {
     fn layout_flow(&mut self, allocated: Vec2<u16>) -> Vec2<u16> {
         let anchor_out = flow_child(&mut *self.anchor, allocated);
         if let Some(body) = &mut self.body {
-            let canvas = crate::runtime::get_terminal_info()
-                .map(|i| i.size)
-                .unwrap_or(Vec2::of(u16::MAX));
+            let canvas = crate::get_runtime_info().size;
             let body_max = body.get_layout().constraints.max_size;
             let alloc_x = body_max.x.min(canvas.x);
             let body_input = Vec2::new(alloc_x, canvas.y);
             flow_child(&mut **body, body_input);
-            let flow_out = get_flow_output_size_layout(body.get_layout());
+            let flow_out = flow_output_size(body.get_layout());
             let body_size = Vec2::new(flow_out.x.min(canvas.x), flow_out.y.min(canvas.y));
             body.set_rect_size(body_size);
         }
@@ -72,7 +70,7 @@ impl Widget for Tooltip {
     }
 
     fn layout_measure(&self, allocated: Vec2<u16>) -> Vec2<u16> {
-        flow_child_measure(&*self.anchor, allocated)
+        measure_child(&*self.anchor, allocated)
     }
 
     fn layout_position(&mut self) {
@@ -95,58 +93,50 @@ impl Widget for Tooltip {
     fn render(&self, mut ctx: crate::render::RenderContext) {
         let anchor_pos = self.anchor.get_pos() - self.layout.rect.pos;
         ctx.render_child(&*self.anchor, anchor_pos);
-        if self.visible {
-            if let Some(body) = &self.body {
-                let body_pos = body.get_pos() - self.layout.rect.pos;
-                ctx.render_child(&**body, body_pos);
-            }
+        if self.visible
+            && let Some(body) = &self.body
+        {
+            let body_pos = body.get_pos() - self.layout.rect.pos;
+            ctx.render_child(&**body, body_pos);
         }
     }
 
-    fn each_child(
-        &self,
-        f: &mut dyn FnMut(&dyn Widget),
-        direction: Sign,
-    ) {
+    fn each_child(&self, f: &mut dyn FnMut(&dyn Widget), direction: Sign) {
         match direction {
             Sign::Positive => {
                 f(&*self.anchor);
-                if self.visible {
-                    if let Some(body) = &self.body {
-                        f(&**body);
-                    }
+                if self.visible
+                    && let Some(body) = &self.body
+                {
+                    f(&**body);
                 }
             }
             Sign::Negative => {
-                if self.visible {
-                    if let Some(body) = &self.body {
-                        f(&**body);
-                    }
+                if self.visible
+                    && let Some(body) = &self.body
+                {
+                    f(&**body);
                 }
                 f(&*self.anchor);
             }
         }
     }
 
-    fn each_child_mut(
-        &mut self,
-        f: &mut dyn FnMut(&mut dyn Widget),
-        direction: Sign,
-    ) {
+    fn each_child_mut(&mut self, f: &mut dyn FnMut(&mut dyn Widget), direction: Sign) {
         match direction {
             Sign::Positive => {
                 f(&mut *self.anchor);
-                if self.visible {
-                    if let Some(body) = &mut self.body {
-                        f(&mut **body);
-                    }
+                if self.visible
+                    && let Some(body) = &mut self.body
+                {
+                    f(&mut **body);
                 }
             }
             Sign::Negative => {
-                if self.visible {
-                    if let Some(body) = &mut self.body {
-                        f(&mut **body);
-                    }
+                if self.visible
+                    && let Some(body) = &mut self.body
+                {
+                    f(&mut **body);
                 }
                 f(&mut *self.anchor);
             }
@@ -176,14 +166,14 @@ impl Tooltip {
 
     /// Builder form of [`Tooltip::set_content`].
     pub fn content(mut self: Box<Self>, body: Box<dyn Widget>) -> Box<Self> {
-        self.set_content(body);
+        self.set_content(Some(body));
         self
     }
 
-    /// Sets the floating body shown when the tooltip is visible.
-    pub fn set_content(&mut self, body: Box<dyn Widget>) {
+    /// Sets or clears the floating body shown when the tooltip is visible.
+    pub fn set_content(&mut self, body: Option<Box<dyn Widget>>) {
         let z = self.layer();
-        self.body = Some(Box::new(ZLayer { inner: body, z }));
+        self.body = body.map(|body| Box::new(ZLayer { inner: body, z }));
         self.dirty_layout();
     }
 
@@ -204,7 +194,7 @@ impl Tooltip {
 
     crate::style_field! {
         /// Whether the body hides when the anchor loses hover or focus.
-        autohide: bool
+        autohide as autohides: bool
     }
 }
 

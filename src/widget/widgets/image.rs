@@ -18,8 +18,8 @@ impl Image {
         if px.x == 0 || px.y == 0 {
             return 1.0;
         }
-        let cell_px = crate::runtime::get_terminal_info()
-            .and_then(|i| i.cell_px)
+        let cell_px = crate::get_runtime_info()
+            .cell_size
             .unwrap_or(Vec2::new(1u16, 2u16));
         let numerator = px.x as f64 * cell_px.y as f64;
         let denominator = (px.y as f64 * cell_px.x as f64).max(1.0);
@@ -48,8 +48,8 @@ impl Image {
             }
             (false, false) if upper.x == u16::MAX && upper.y == u16::MAX => {
                 let px = self.source.get_pixel_dims();
-                let cell_px = crate::runtime::get_terminal_info()
-                    .and_then(|i| i.cell_px)
+                let cell_px = crate::get_runtime_info()
+                    .cell_size
                     .unwrap_or(Vec2::new(1u16, 2u16));
                 let nat_x = (px.x / cell_px.x.max(1) as u32).clamp(1, u16::MAX as u32) as u16;
                 let nat_y = (px.y / cell_px.y.max(1) as u32).clamp(1, u16::MAX as u32) as u16;

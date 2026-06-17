@@ -8,6 +8,12 @@ pub struct Revelation {
     rects: Vec<Rect<i32, u16>>,
 }
 
+impl Default for Revelation {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Revelation {
     /// Creates an empty revelation.
     pub const fn new() -> Self {
@@ -22,7 +28,7 @@ impl Revelation {
     /// Translates every entry by `by`.
     pub fn translate(&mut self, by: Vec2<i32>) {
         for r in &mut self.rects {
-            r.pos = r.pos + by;
+            r.pos += by;
         }
     }
 
@@ -67,7 +73,7 @@ pub fn resolve_revelation_axis(
     let end = start + size;
     match align {
         Some(Align::Start) => start - scrolloff as i32,
-        Some(Align::Middle) => start + size / 2 - viewport / 2,
+        Some(Align::Center) => start + size / 2 - viewport / 2,
         Some(Align::End) => end - viewport + scrolloff as i32,
         None => {
             let max_so = (viewport - size).max(0) / 2;

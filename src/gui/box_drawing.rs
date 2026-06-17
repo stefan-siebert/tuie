@@ -918,7 +918,7 @@ mod double {
     pub(super) fn corner(g: &mut Glyph, opens: u32) {
         let stroke = g.stroke_thickness(Stroke::Light);
         let trail = stroke / 2;
-        let lead = (stroke + 1) / 2;
+        let lead = stroke.div_ceil(2);
         let cx = g.size.x / 2;
         let cy = g.size.y / 2;
         let max_x = g.size.x.saturating_sub(1);
@@ -981,7 +981,7 @@ mod eighths {
     pub(super) fn boundary(total: u32, index: u32, count: u32) -> u32 {
         let count = count.max(1);
         let extra = total % count;
-        let thick_lo = count / 2 - (extra + 1) / 2;
+        let thick_lo = count / 2 - extra.div_ceil(2);
         let added = index.saturating_sub(thick_lo).min(extra);
         index * (total / count) + added
     }
@@ -1121,11 +1121,10 @@ mod braille {
 
     pub(super) fn draw(g: &mut Glyph, ch: char) {
         let mask = (ch as u32) - 0x2800;
-        for bit in 0..8 {
+        for (bit, &(col, row)) in DOT_GRID.iter().enumerate() {
             if mask & (1 << bit) == 0 {
                 continue;
             }
-            let (col, row) = DOT_GRID[bit];
             dot(g, col, row);
         }
     }
@@ -1133,9 +1132,9 @@ mod braille {
     fn layout(track: u32, dots: u32) -> ([u32; 4], u32) {
         let size = (track / (2 * dots)).max(1);
         let mut starts = [0u32; 4];
-        for i in 0..dots as usize {
+        for (i, start) in starts.iter_mut().take(dots as usize).enumerate() {
             let center = ((2 * i as u32 + 1) * track) / (2 * dots);
-            starts[i] = center.saturating_sub(size / 2);
+            *start = center.saturating_sub(size / 2);
         }
         (starts, size)
     }

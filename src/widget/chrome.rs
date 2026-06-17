@@ -5,11 +5,18 @@ use crate::prelude::*;
 /// Title placed on a [`Chrome`] border at a given edge and alignment.
 pub struct ChromeTitle {
     /// Title text drawn on the border.
-    pub text: String,
+    pub text: StyledString,
     /// Border edge the title sits on.
     pub edge: VerticalEdge,
     /// Horizontal alignment of the title along its edge.
     pub align: Align,
+}
+
+impl ChromeTitle {
+    /// Creates a title from text, edge, and alignment.
+    pub fn new(text: impl Into<StyledString>, edge: VerticalEdge, align: Align) -> Self {
+        Self { text: text.into(), edge, align }
+    }
 }
 
 /// Border, padding, and titles drawn around a widget's content area.
@@ -62,6 +69,11 @@ impl Chrome {
         self.get_title_at(VerticalEdge::Top, Align::Start)
     }
 
+    /// Sets or clears the top-left title.
+    pub fn set_title(&mut self, title: Option<StyledString>) {
+        self.set_title_at(VerticalEdge::Top, Align::Start, title);
+    }
+
     /// Returns the title text at `edge` and `align`, if any.
     pub fn get_title_at(&self, edge: VerticalEdge, align: Align) -> Option<&str> {
         self.titles.iter()
@@ -70,10 +82,10 @@ impl Chrome {
     }
 
     /// Sets or clears the title at `edge` and `align`.
-    pub fn set_title_at(&mut self, edge: VerticalEdge, align: Align, text: Option<String>) {
+    pub fn set_title_at(&mut self, edge: VerticalEdge, align: Align, text: Option<StyledString>) {
         self.titles.retain(|t| t.edge != edge || t.align != align);
         if let Some(text) = text {
-            self.titles.push(ChromeTitle { text, edge, align });
+            self.titles.push(ChromeTitle::new(text, edge, align));
         }
     }
 
@@ -96,13 +108,13 @@ impl Chrome {
                 continue;
             }
 
-            let decorated = format!("{} {} ", separator, title.text);
-            let decorated_w = crate::render::terminal_display_width(&decorated);
+            let decorated = format!("{} {} ", separator, title.text.as_str());
+            let decorated_w = tuie::display_width(&decorated);
             let slack = inner_w.saturating_sub(decorated_w);
 
             let x: i32 = 1 + match title.align {
                 Align::Start => 0,
-                Align::Middle => (slack / 2) as i32,
+                Align::Center => (slack / 2) as i32,
                 Align::End => slack as i32,
             };
             let y: i32 = match title.edge {
@@ -113,7 +125,13 @@ impl Chrome {
             ctx.move_to(Vec2::new(x, y));
             let region_w = (inner_w + 1).saturating_sub(x as usize) as u16;
             let mut region = ctx.region(Vec2::new(region_w, 1));
-            write!(region, "{}", decorated);
+            write!(region, "{} ", separator);
+            for (chunk, style) in title.text.iter_chunks(..) {
+                region.set_style(style);
+                region.write(chunk);
+            }
+            region.set_style(Style::new());
+            region.write(" ");
         }
     }
 }

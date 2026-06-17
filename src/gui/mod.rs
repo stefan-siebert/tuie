@@ -21,8 +21,11 @@ use std::sync::Arc;
 
 /// How the window's title bar is presented.
 #[derive(Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+#[derive(Default)]
 pub enum TitleBar {
     /// Transparent title bar with a top pad reserved above the grid.
+    #[default]
     Padding,
     /// Transparent title bar with no top pad.
     Overlap,
@@ -30,11 +33,6 @@ pub enum TitleBar {
     System,
 }
 
-impl Default for TitleBar {
-    fn default() -> Self {
-        TitleBar::Padding
-    }
-}
 
 impl std::fmt::Display for TitleBar {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -47,16 +45,17 @@ impl std::fmt::Display for TitleBar {
 }
 
 /// GUI backend configuration.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
+#[non_exhaustive]
 pub struct GuiConfig {
     /// The system font family name.
-    pub font_family: Option<&'static str>,
+    pub font_family: Option<String>,
     /// The font size in logical pixels.
     pub font_size: f32,
     /// Bundled font bytes, taking precedence over `font_family`.
-    pub font_data: Option<&'static [u8]>,
+    pub font_data: Option<Vec<u8>>,
     /// Family names tried in order for glyphs the primary font lacks.
-    pub font_fallbacks: &'static [&'static str],
+    pub font_fallbacks: Vec<String>,
     /// The title-bar style.
     pub title_bar: TitleBar,
     /// Whether to extend edge-row backgrounds into the side padding.
@@ -78,30 +77,80 @@ pub struct GuiConfig {
     /// The theme applied when the active appearance is dark.
     pub dark_theme: Theme,
     /// The forced color scheme, or `None` to follow the OS appearance.
-    pub appearance: Option<ColorScheme>,
+    pub color_scheme: Option<ColorScheme>,
 }
 
-crate::config_module!(GuiConfig {
-    font_family: None,
-    font_size: 14.0,
-    font_data: None,
-    font_fallbacks: &[],
-    title_bar: TitleBar::Padding,
-    extend_sides: false,
-    extend_header: false,
-    extend_footer: false,
-    horizontal_padding: 0,
-    vertical_padding: 0,
-    center_grid: false,
-    cursor_style: Style::new().fg(Color::Background).bg(Color::Foreground),
-    light_theme: Theme::CENTURY_LIGHT,
-    dark_theme: Theme::CENTURY_DARK,
-    appearance: None,
-});
+impl Default for GuiConfig {
+    fn default() -> Self {
+        Self {
+            font_family: None,
+            font_size: 14.0,
+            font_data: None,
+            font_fallbacks: Vec::new(),
+            title_bar: TitleBar::Padding,
+            extend_sides: false,
+            extend_header: false,
+            extend_footer: false,
+            horizontal_padding: 0,
+            vertical_padding: 0,
+            center_grid: false,
+            cursor_style: Style::new().fg(Color::Background).bg(Color::Foreground),
+            light_theme: Theme::CENTURY_LIGHT,
+            dark_theme: Theme::CENTURY_DARK,
+            color_scheme: None,
+        }
+    }
+}
+
+pub mod config {
+    #[allow(unused_imports)]
+    use super::*;
+    ::std::thread_local! {
+        static CONFIG: ::std::cell::RefCell<super::GuiConfig> =
+            ::std::cell::RefCell::new(super::GuiConfig::default());
+    }
+
+    /// Returns a copy of the current configuration.
+    pub fn get() -> super::GuiConfig {
+        CONFIG.with(|c| c.borrow().clone())
+    }
+
+    fn set(cfg: super::GuiConfig) {
+        let prev = CONFIG.with(|c| c.replace(cfg.clone()));
+        crate::dirty_layout();
+        if cfg.font_size != prev.font_size {
+            crate::runtime::try_with_gui_state(|s| {
+                s.reload_font_if_needed();
+                if let Some(backend) = s.backend.as_mut() {
+                    backend.clear_glyph_atlas();
+                }
+                s.relayout();
+            });
+        }
+        #[cfg(feature = "harmonious")]
+        if cfg.light_theme != prev.light_theme
+            || cfg.dark_theme != prev.dark_theme
+            || cfg.color_scheme != prev.color_scheme
+        {
+            crate::runtime::try_with_gui_state(|s| {
+                let win_theme = s.window.as_ref().and_then(|w| w.theme());
+                super::apply_window_theme(win_theme, &cfg);
+            });
+            crate::dirty_paint();
+        }
+    }
+
+    /// Applies `f` to the configuration in place.
+    pub fn update(f: impl FnOnce(&mut super::GuiConfig)) {
+        let mut cfg = get();
+        f(&mut cfg);
+        set(cfg);
+    }
+}
 
 #[cfg(feature = "harmonious")]
 fn apply_window_theme(win_theme: Option<winit::window::Theme>, cfg: &GuiConfig) {
-    let scheme = cfg.appearance.unwrap_or_else(|| match win_theme {
+    let scheme = cfg.color_scheme.unwrap_or(match win_theme {
         Some(winit::window::Theme::Light) => ColorScheme::Light,
         _ => ColorScheme::Dark,
     });
@@ -110,28 +159,6 @@ fn apply_window_theme(win_theme: Option<winit::window::Theme>, cfg: &GuiConfig) 
         ColorScheme::Dark => cfg.dark_theme,
     };
     crate::theme::harmonious::apply_palette(crate::theme::harmonious::Palette::from_theme(theme));
-}
-
-/// Re-applies the active GUI theme from [`GuiConfig`].
-#[cfg(feature = "harmonious")]
-pub fn reapply_theme() {
-    crate::runtime::try_with_gui_state(|s| {
-        let win_theme = s.window.as_ref().and_then(|w| w.theme());
-        apply_window_theme(win_theme, &config::get());
-    });
-    crate::runtime::dirty_paint();
-}
-
-/// Sets the GUI font size in logical pixels.
-pub fn set_font_size(px: f32) {
-    config::update(|cfg| cfg.font_size = px);
-    crate::runtime::try_with_gui_state(|s| {
-        s.reload_font_if_needed();
-        if let Some(backend) = s.backend.as_mut() {
-            backend.clear_glyph_atlas();
-        }
-        s.relayout();
-    });
 }
 
 /// Returns `(left, right)` cell-column counts to keep clear of OS title-bar chrome.
@@ -143,7 +170,7 @@ pub fn title_bar_insets() -> (u16, u16) {
     #[cfg(target_os = "macos")]
     {
         crate::runtime::try_with_gui_state(|s| {
-            let cell_w = (s.font.get_cell_w() as u32).max(1);
+            let cell_w = s.font.get_cell_w().max(1);
             let traffic_light_px = 66u32 * s.scale.max(1);
             let cells = traffic_light_px.div_ceil(cell_w).min(u16::MAX as u32) as u16;
             (cells, 0u16)
@@ -261,10 +288,10 @@ impl GuiState {
     fn reload_font_if_needed(&mut self) {
         let cfg = config::get();
         let target = cfg.font_size * self.scale as f32;
-        if (self.font.get_px_size() - target).abs() > f32::EPSILON {
-            if let Err(e) = self.font.set_pixel_size(target) {
-                eprintln!("tuie gui: font resize failed: {e}");
-            }
+        if (self.font.get_px_size() - target).abs() > f32::EPSILON
+            && let Err(e) = self.font.set_pixel_size(target)
+        {
+            eprintln!("tuie gui: font resize failed: {e}");
         }
     }
 
@@ -279,12 +306,7 @@ impl GuiState {
     }
 
     fn first_held_button(&self) -> Option<MouseButton> {
-        for btn in [MouseButton::Left, MouseButton::Right, MouseButton::Middle] {
-            if self.held_buttons & Self::button_mask(btn) != 0 {
-                return Some(btn);
-            }
-        }
-        None
+        [MouseButton::Left, MouseButton::Right, MouseButton::Middle].into_iter().find(|&btn| self.held_buttons & Self::button_mask(btn) != 0)
     }
 
     fn push_scroll(&mut self, axis: Axis2D, delta_cells: f32) {
@@ -299,11 +321,21 @@ impl GuiState {
         };
         self.pending_events.push(RuntimeEvent::Input(InputEvent {
             chord: Chord::new(Trigger::MouseSmoothScroll(dir, delta_cells.abs()), self.modifiers),
-            mouse_pos: self.mouse_cell,
-            mouse_window_pos: self.mouse_cell,
-            mouse_window_subpx: self.mouse_subpx,
+            pos: self.pack_mouse_pos(),
             count: 1,
         }));
+    }
+
+    fn pack_mouse_pos(&self) -> Vec2<f32> {
+        if self.mouse_cell.x < 0 || self.mouse_cell.y < 0 {
+            return Vec2::of(-1.0);
+        }
+        let cell_w = self.font.get_cell_w() as f32;
+        let cell_h = self.font.get_cell_h() as f32;
+        Vec2::new(
+            self.mouse_cell.x as f32 + self.mouse_subpx.x as f32 / cell_w,
+            self.mouse_cell.y as f32 + self.mouse_subpx.y as f32 / cell_h,
+        )
     }
 }
 
@@ -322,7 +354,7 @@ impl Gui {
         let gpu_worker = std::thread::spawn(gpu::build_instance_and_adapter);
 
         let event_loop = EventLoop::new()
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+            .map_err(|e| std::io::Error::other(e.to_string()))?;
         let db = fontdb_worker.join().expect("fontdb worker panicked");
         let (instance, adapter) = gpu_worker.join().expect("gpu worker panicked")?;
         let font = FontCache::new_with_db(&cfg, db, 1)?;
@@ -419,7 +451,7 @@ fn resolve_color(color: Color) -> u32 {
         Color::Foreground => 0xFFD0D0D0,
         Color::Background => 0xFF101010,
         Color::Rgb(r, g, b) => pack_rgb(r, g, b),
-        Color::Base256(n) => fallback_ansi(n),
+        Color::Indexed(n) => fallback_ansi(n),
     }
 }
 
@@ -517,16 +549,11 @@ impl ApplicationHandler for GuiState {
         self.window = Some(window);
         self.backend = Some(backend);
         crate::runtime::sync_gui_grid_size(self.cell_size, self.font_cell_px());
-        crate::runtime::dirty_layout();
+        crate::dirty_layout();
         self.pending_events.push(RuntimeEvent::Focus(true));
     }
 
-    fn window_event(
-        &mut self,
-        event_loop: &ActiveEventLoop,
-        _id: WindowId,
-        event: WindowEvent,
-    ) {
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         match event {
             WindowEvent::CloseRequested => {
                 self.exit_code = Some(0);
@@ -535,7 +562,7 @@ impl ApplicationHandler for GuiState {
             WindowEvent::Resized(new_size) => {
                 self.pixel_size = Vec2::new(new_size.width.max(1), new_size.height.max(1));
                 self.relayout();
-                crate::runtime::dirty_paint();
+                crate::dirty_paint();
             }
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
                 let new_scale = scale_factor.round().max(1.0) as u32;
@@ -549,12 +576,12 @@ impl ApplicationHandler for GuiState {
                 self.focused = f;
                 self.cursor_blink_anchor = std::time::Instant::now();
                 self.pending_events.push(RuntimeEvent::Focus(f));
-                crate::runtime::dirty_paint();
+                crate::dirty_paint();
             }
             #[cfg(feature = "harmonious")]
             WindowEvent::ThemeChanged(t) => {
                 apply_window_theme(Some(t), &config::get());
-                crate::runtime::dirty_paint();
+                crate::dirty_paint();
             }
             WindowEvent::ModifiersChanged(m) => {
                 self.modifiers = winit_modifiers_to_tuie(m.state());
@@ -562,18 +589,16 @@ impl ApplicationHandler for GuiState {
             WindowEvent::KeyboardInput {
                 event: key_event, ..
             } => {
-                if key_event.state == ElementState::Pressed {
-                    if let Some(chord) = winit_key_to_chord(&key_event, self.modifiers) {
-                        self.cursor_blink_anchor = std::time::Instant::now();
-                        crate::runtime::dirty_paint();
-                        self.pending_events.push(RuntimeEvent::Input(InputEvent {
-                            chord,
-                            mouse_pos: self.mouse_cell,
-                            mouse_window_pos: self.mouse_cell,
-                            mouse_window_subpx: self.mouse_subpx,
-                            count: 1,
-                        }));
-                    }
+                if key_event.state == ElementState::Pressed
+                    && let Some(chord) = winit_key_to_chord(&key_event, self.modifiers)
+                {
+                    self.cursor_blink_anchor = std::time::Instant::now();
+                    crate::dirty_paint();
+                    self.pending_events.push(RuntimeEvent::Input(InputEvent {
+                        chord,
+                        pos: self.pack_mouse_pos(),
+                        count: 1,
+                    }));
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
@@ -616,9 +641,7 @@ impl ApplicationHandler for GuiState {
                     };
                     self.pending_events.push(RuntimeEvent::Input(InputEvent {
                         chord: Chord::new(trigger, self.modifiers),
-                        mouse_pos: self.mouse_cell,
-                        mouse_window_pos: self.mouse_cell,
-                        mouse_window_subpx: self.mouse_subpx,
+                        pos: self.pack_mouse_pos(),
                         count,
                     }));
                 }
@@ -660,9 +683,7 @@ impl ApplicationHandler for GuiState {
                 };
                 self.pending_events.push(RuntimeEvent::Input(InputEvent {
                     chord: Chord::new(trigger, self.modifiers),
-                    mouse_pos: self.mouse_cell,
-                    mouse_window_pos: self.mouse_cell,
-                    mouse_window_subpx: self.mouse_subpx,
+                    pos: self.pack_mouse_pos(),
                     count: self.click_count,
                 }));
             }
@@ -736,7 +757,7 @@ impl GuiState {
             self.last_cursor_xy = cursor_xy;
         }
         let cursor_xy = if self.focused
-            && crate::runtime::config::get().cursor_blink
+            && crate::config::get().cursor_blink
             && cursor_xy.is_some()
         {
             let elapsed = self.cursor_blink_anchor.elapsed().as_millis() as u64;
@@ -745,7 +766,7 @@ impl GuiState {
                 self.cursor_blink_anchor
                     + std::time::Duration::from_millis((phase + 1) * Self::BLINK_HALF_MS),
             );
-            if phase % 2 == 0 {
+            if phase.is_multiple_of(2) {
                 cursor_xy
             } else {
                 None
@@ -898,10 +919,10 @@ fn render_grid_pass(
             return;
         }
         backend.push_cell(x, y, glyph, &cell, font);
-        if let Some((cx, cy)) = cursor_xy {
-            if cx == x as i32 && cy == y as i32 {
-                cursor_overlay = Some((x, y, glyph.to_string(), *style, wide));
-            }
+        if let Some((cx, cy)) = cursor_xy
+            && cx == x as i32 && cy == y as i32
+        {
+            cursor_overlay = Some((x, y, glyph.to_string(), *style, wide));
         }
     });
     #[cfg(feature = "images")]
@@ -941,8 +962,8 @@ fn paint_cursor_overlay(
     let merged = underlying_style.apply(cursor_style);
     let reversed = cursor_style.has_reverse();
 
-    let fg_color = merged.fg.unwrap_or(Color::Foreground);
-    let bg_color = merged.bg.unwrap_or(Color::Background);
+    let fg_color = merged.get_fg().unwrap_or(Color::Foreground);
+    let bg_color = merged.get_bg().unwrap_or(Color::Background);
     let mut fg_rgba = gpu::u32_to_rgba(resolve_color(fg_color));
     let mut bg_rgba = gpu::u32_to_rgba(resolve_color(bg_color));
     if merged.has_dim() {
@@ -954,7 +975,7 @@ fn paint_cursor_overlay(
 
     match shape {
         CursorShape::Block => {
-            let underline_rgba = match merged.underline_color {
+            let underline_rgba = match merged.get_underline_color() {
                 Some(c) => gpu::u32_to_rgba(resolve_color(c)),
                 None => fg_rgba,
             };
@@ -968,7 +989,7 @@ fn paint_cursor_overlay(
                 bold: merged.has_bold(),
                 italic: merged.has_italic(),
                 strikethrough: merged.has_strikethrough(),
-                underline: merged.underline.unwrap_or(UnderlineType::None),
+                underline: merged.get_underline().unwrap_or(UnderlineType::None),
             };
             backend.push_cell(cx, cy, glyph, &cell, font);
         }
@@ -1036,12 +1057,12 @@ fn drain_offset_entries(
         let Some(entry) = renderer.pop_defer_entry() else {
             break;
         };
-        if let Some(dc) = deferred {
-            if !cursor_painted
-                && cursor_clip_slot.is_some()
-                && !matches!(entry.kind, crate::render::Kind::Offset { .. })
-            {
-                paint_deferred_cursor(
+        if let Some(dc) = deferred
+            && !cursor_painted
+            && cursor_clip_slot.is_some()
+            && !matches!(entry.kind, crate::render::Kind::Offset { .. })
+        {
+            paint_deferred_cursor(
                     backend,
                     font,
                     &dc,
@@ -1052,11 +1073,10 @@ fn drain_offset_entries(
                 );
                 cursor_painted = true;
             }
-        }
-        let phys_size: Vec2<u16>;
+        
         let screen_pos_px: Vec2<i32>;
         let scissor: Option<(Vec2<i32>, Vec2<u32>)>;
-        let bg_alpha: f32;
+        
         let mut local_cursor_xy: Option<(u16, u16)> = None;
         match &entry.kind {
             crate::render::Kind::Offset {
@@ -1091,7 +1111,7 @@ fn drain_offset_entries(
                 // deref below). `entry.widget` is live for the duration of
                 // this present pass.
                 let entry_id = unsafe { &*entry.widget }.get_id();
-                let in_sel = focus_chain.iter().any(|id| *id == entry_id);
+                let in_sel = focus_chain.contains(&entry_id);
                 if in_sel {
                     let content_min = entry.snapshot.anchor;
                     let content_max_x = content_min.x + entry.snapshot.physical_size.x as i32;
@@ -1143,8 +1163,8 @@ fn drain_offset_entries(
         // cleared per paint and fully drained inside this present pass, and
         // nothing mutates the widget tree between push and drain.
         let widget: &dyn Widget = unsafe { &*entry.widget };
-        bg_alpha = widget.get_style().get_blend().unwrap_or(100) as f32 / 100.0;
-        phys_size = entry.snapshot.physical_size;
+        let bg_alpha: f32 = widget.get_style().get_blend().unwrap_or(100) as f32 / 100.0;
+        let phys_size: Vec2<u16> = entry.snapshot.physical_size;
         let (is_layer, mut pass_scissor) = match entry.kind {
             crate::render::Kind::Layer => (true, scissor),
             crate::render::Kind::Popup => (false, None),
@@ -1180,9 +1200,10 @@ fn drain_offset_entries(
         }
         backend.flush_passes(cell_px, screen_pos_px, is_layer, pass_scissor, bg_alpha);
     }
-    if let Some(dc) = deferred {
-        if !cursor_painted {
-            paint_deferred_cursor(
+    if let Some(dc) = deferred
+        && !cursor_painted
+    {
+        paint_deferred_cursor(
                 backend,
                 font,
                 &dc,
@@ -1192,7 +1213,6 @@ fn drain_offset_entries(
                 cursor_overlay_slot.clone(),
             );
         }
-    }
 }
 
 fn winit_modifiers_to_tuie(m: ModifiersState) -> Modifiers {

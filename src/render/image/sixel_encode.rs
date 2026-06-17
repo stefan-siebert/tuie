@@ -259,5 +259,5 @@ pub(super) fn emit_sixel_dcs(
 }
 
 thread_local! {
-    static BITMAPS_SCRATCH: RefCell<Vec<u8>> = RefCell::new(Vec::new());
+    static BITMAPS_SCRATCH: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
 }

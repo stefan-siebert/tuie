@@ -30,7 +30,7 @@ impl std::fmt::Display for ColorScheme {
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
 pub enum ColorType {
     /// 256-color palette entry `n` (OSC 4).
-    Palette(u8),
+    Indexed(u8),
     /// Default foreground (OSC 10).
     Foreground,
     /// Default background (OSC 11).
@@ -74,7 +74,7 @@ impl ColorType {
     /// Returns the OSC number for this color slot.
     pub fn get_osc_number(&self) -> u8 {
         match self {
-            Self::Palette(_) => 4,
+            Self::Indexed(_) => 4,
             Self::Foreground => 10,
             Self::Background => 11,
             Self::Cursor => 12,
@@ -122,8 +122,8 @@ pub enum ParsedEvent {
     Key(Chord),
     /// A decoded mouse event.
     Mouse(MouseInput),
-    /// Terminal resized to `(columns, rows)`.
-    Resize(u16, u16),
+    /// Terminal resized to the given size in cells.
+    Resize(Vec2<u16>),
     /// Focus gained (`true`) or lost (`false`).
     Focus(bool),
     /// A bracketed-paste payload.
@@ -167,6 +167,7 @@ pub use windows::{disable_raw_mode, enable_raw_mode, is_raw_mode_enabled, size, 
 mod unix {
     use super::input::Parser;
     use super::ParsedEvent;
+    use crate::prelude::Vec2;
     use std::io::{self, Read, Write};
     use std::os::unix::io::{AsRawFd, RawFd};
     use std::os::unix::net::UnixStream;
@@ -370,10 +371,10 @@ mod unix {
             if unsafe { libc::FD_ISSET(self.fd, &read_set) } {
                 self.drain_tty()?;
             }
-            if let Some(w) = winch_fd {
-                if unsafe { libc::FD_ISSET(w, &read_set) } {
-                    self.drain_winch()?;
-                }
+            if let Some(w) = winch_fd
+                && unsafe { libc::FD_ISSET(w, &read_set) }
+            {
+                self.drain_winch()?;
             }
             let woken = match self.wake {
                 Some(w) => unsafe { libc::FD_ISSET(w, &read_set) },
@@ -445,17 +446,17 @@ mod unix {
                 }
             }
             let (cols, rows) = size()?;
-            self.parser.push_event(ParsedEvent::Resize(cols, rows));
+            self.parser.push_event(ParsedEvent::Resize(Vec2::new(cols, rows)));
             Ok(())
         }
     }
-
 }
 
 #[cfg(windows)]
 mod windows {
     use super::input::Parser;
     use super::ParsedEvent;
+    use crate::prelude::Vec2;
     use std::io::{self, Write};
     use std::sync::Mutex;
     use std::time::Duration;
@@ -865,7 +866,7 @@ mod windows {
             if let Ok(sz) = size() {
                 if self.last_size != Some(sz) {
                     self.last_size = Some(sz);
-                    self.parser.push_event(ParsedEvent::Resize(sz.0, sz.1));
+                    self.parser.push_event(ParsedEvent::Resize(Vec2::new(sz.0, sz.1)));
                 }
             }
         }

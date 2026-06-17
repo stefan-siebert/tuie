@@ -3,19 +3,13 @@
 use crate::prelude::*;
 use nonmax::NonMaxU8;
 
-/// Boolean text attribute encoded as a single bit in a [`Style`]'s attribute mask.
 #[repr(u8)]
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub enum StyleAttribute {
-    /// Bold weight.
+pub(crate) enum StyleAttribute {
     Bold = 1 << 0,
-    /// Italic slant.
     Italic = 1 << 1,
-    /// Swaps foreground and background.
     Reverse = 1 << 2,
-    /// Strikethrough line.
     Strikethrough = 1 << 3,
-    /// Reduced intensity.
     Dim = 1 << 4,
 }
 
@@ -43,14 +37,10 @@ const fn clamp_blend(v: u8) -> NonMaxU8 {
 /// Foreground, background, underline, and boolean attributes for a cell.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Style {
-    /// Foreground color, or `None` to inherit.
-    pub fg: Option<Color>,
-    /// Background color, or `None` to inherit.
-    pub bg: Option<Color>,
-    /// Underline color, or `None` to use the foreground.
-    pub underline_color: Option<Color>,
-    /// Underline shape, or `None` to inherit.
-    pub underline: Option<UnderlineType>,
+    fg: Option<Color>,
+    bg: Option<Color>,
+    underline_color: Option<Color>,
+    underline: Option<UnderlineType>,
     attrs: u8,
     mask: u8,
     blend: Option<NonMaxU8>,
@@ -166,11 +156,45 @@ impl Style {
         self
     }
 
+    /// Sets or clears the foreground color via builder.
+    #[must_use]
+    pub const fn fg_opt(mut self, color: Option<Color>) -> Self {
+        self.fg = color;
+        self
+    }
+
+    /// Returns the foreground color, if any.
+    pub const fn get_fg(&self) -> Option<Color> {
+        self.fg
+    }
+
+    /// Sets or clears the foreground color.
+    pub const fn set_fg(&mut self, color: Option<Color>) {
+        self.fg = color;
+    }
+
     /// Sets the background color.
     #[must_use]
     pub const fn bg(mut self, color: Color) -> Self {
         self.bg = Some(color);
         self
+    }
+
+    /// Sets or clears the background color via builder.
+    #[must_use]
+    pub const fn bg_opt(mut self, color: Option<Color>) -> Self {
+        self.bg = color;
+        self
+    }
+
+    /// Returns the background color, if any.
+    pub const fn get_bg(&self) -> Option<Color> {
+        self.bg
+    }
+
+    /// Sets or clears the background color.
+    pub const fn set_bg(&mut self, color: Option<Color>) {
+        self.bg = color;
     }
 
     /// Sets the underline shape to `Some(underline)`.
@@ -204,6 +228,23 @@ impl Style {
         self
     }
 
+    /// Sets or clears the underline color via builder.
+    #[must_use]
+    pub const fn underline_color_opt(mut self, color: Option<Color>) -> Self {
+        self.underline_color = color;
+        self
+    }
+
+    /// Returns the underline color, if any.
+    pub const fn get_underline_color(&self) -> Option<Color> {
+        self.underline_color
+    }
+
+    /// Sets or clears the underline color.
+    pub const fn set_underline_color(&mut self, color: Option<Color>) {
+        self.underline_color = color;
+    }
+
     const fn write_attr(&mut self, attr: StyleAttribute, value: bool) {
         self.mask |= attr as u8;
         if value {
@@ -217,13 +258,13 @@ impl Style {
         self.attrs & (attr as u8) != 0
     }
 
-    /// Returns the raw packed bits for all [`StyleAttribute`] flags.
-    pub const fn get_attrs_bits(&self) -> u8 {
+    /// Returns the raw packed bits for all boolean attribute flags.
+    pub(crate) const fn get_attrs_bits(&self) -> u8 {
         self.attrs
     }
 
-    /// Returns the mask of which [`StyleAttribute`] flags are explicitly set in this style.
-    pub const fn get_attrs_mask(&self) -> u8 {
+    /// Returns the mask of which boolean attribute flags are explicitly set in this style.
+    pub(crate) const fn get_attrs_mask(&self) -> u8 {
         self.mask
     }
 
@@ -308,7 +349,7 @@ impl Style {
     }
 
     /// Returns the color that becomes the visible background: `fg` under reverse, else `bg`.
-    pub const fn overlay_color(&self) -> Option<Color> {
+    pub const fn get_overlay_color(&self) -> Option<Color> {
         if self.has_reverse() {
             self.fg
         } else {
@@ -352,29 +393,43 @@ impl Default for Style {
     }
 }
 
-/// Run of `len` bytes sharing one [`Style`] inside a [`StyledString`].
+/// Style run inside a [`StyledString`] ending at byte `end` (exclusive).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Span {
+struct Span {
     /// Style applied to every byte in the run.
-    pub style: Style,
-    /// Number of bytes in the run.
-    pub len: usize,
+    style: Style,
+    /// Cumulative end offset of the run in bytes.
+    end: usize,
 }
 
 impl Span {
-    /// Creates a span of `len` bytes with the given [`Style`].
-    pub const fn new(len: usize, style: Style) -> Self {
-        Self { len, style }
+    /// Creates a span ending at byte `end` with the given [`Style`].
+    const fn new(end: usize, style: Style) -> Self {
+        Self { end, style }
     }
+}
+
+fn range_offsets(range: impl std::ops::RangeBounds<usize>, unbounded_end: usize) -> (usize, usize) {
+    let start = match range.start_bound() {
+        std::ops::Bound::Included(&n) => n,
+        std::ops::Bound::Excluded(&n) => n + 1,
+        std::ops::Bound::Unbounded => 0,
+    };
+    let end = match range.end_bound() {
+        std::ops::Bound::Included(&n) => n + 1,
+        std::ops::Bound::Excluded(&n) => n,
+        std::ops::Bound::Unbounded => unbounded_end,
+    };
+    (start, end)
 }
 
 /// Owned string paired with per-byte styling.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StyledString {
     /// Underlying text bytes.
-    pub text: String,
-    /// Per-byte style runs.
-    pub spans: Vec<Span>,
+    text: String,
+    /// Style runs with strictly increasing end offsets.
+    spans: Vec<Span>,
 }
 
 impl StyledString {
@@ -401,32 +456,7 @@ impl StyledString {
 
     /// Appends `s` with default styling.
     pub fn push_str(&mut self, s: &str) {
-        if s.is_empty() {
-            return;
-        }
-        self.text.push_str(s);
-        if self.spans.is_empty() {
-            return;
-        }
-        let last = self.spans.last_mut().unwrap();
-        let eof_style = last.style;
-        if last.len > 1 {
-            last.len -= 1;
-            if eof_style == Style::new() {
-                last.len += s.len();
-                self.spans.push(Span::new(1, Style::new()));
-            } else {
-                self.spans.push(Span { style: Style::new(), len: s.len() });
-                self.spans.push(Span { style: eof_style, len: 1 });
-            }
-        } else {
-            let span_count = self.spans.len();
-            if span_count >= 2 && self.spans[span_count - 2].style == Style::new() {
-                self.spans[span_count - 2].len += s.len();
-            } else {
-                self.spans.insert(span_count - 1, Span { style: Style::new(), len: s.len() });
-            }
-        }
+        self.push_span(StyledStr::new(s));
     }
 
     /// Appends `span`, merging with the previous span when their styles match.
@@ -442,24 +472,34 @@ impl StyledString {
             self.spans.push(Span::new(self.text.len() + 1, Style::new()));
         }
         self.text.push_str(span.text);
-        let last = self.spans.last_mut().unwrap();
-        let eof_style = last.style;
-        if last.len > 1 {
-            last.len -= 1;
-            if eof_style == span.style {
-                last.len += span.text.len();
-                self.spans.push(Span { style: eof_style, len: 1 });
-            } else {
-                self.spans.push(Span { style: span.style, len: span.text.len() });
-                self.spans.push(Span { style: eof_style, len: 1 });
-            }
+        let new_end = self.text.len() + 1;
+        let span_count = self.spans.len();
+        let last_start = if span_count >= 2 {
+            self.spans[span_count - 2].end
         } else {
-            let span_count = self.spans.len();
+            0
+        };
+        let eof_style = self.spans[span_count - 1].style;
+        if eof_style == span.style {
+            self.spans[span_count - 1].end = new_end;
+        } else if self.spans[span_count - 1].end - last_start > 1 {
+            self.spans[span_count - 1].end -= 1;
+            self.spans.push(Span { style: span.style, end: new_end - 1 });
+            self.spans.push(Span { style: eof_style, end: new_end });
+        } else {
+            self.spans[span_count - 1].end = new_end;
             if span_count >= 2 && self.spans[span_count - 2].style == span.style {
-                self.spans[span_count - 2].len += span.text.len();
+                self.spans[span_count - 2].end = new_end - 1;
             } else {
-                self.spans.insert(span_count - 1, Span { style: span.style, len: span.text.len() });
+                self.spans.insert(span_count - 1, Span { style: span.style, end: new_end - 1 });
             }
+        }
+    }
+
+    /// Appends `other`, preserving its styled spans.
+    pub fn append(&mut self, other: &StyledString) {
+        for (chunk, style) in other.iter_chunks(..) {
+            self.push_span(StyledStr::new(chunk).style(style));
         }
     }
 
@@ -469,43 +509,122 @@ impl StyledString {
         self.spans.clear();
     }
 
-    /// Applies `f` to the style of every byte inside `range`.
-    pub fn style_range(&mut self, range: std::ops::Range<usize>, f: impl Fn(&mut Style)) {
-        let start = range.start;
-        let end = range.end.min(self.text.len());
+    /// Returns the text as a string slice.
+    pub fn as_str(&self) -> &str {
+        &self.text
+    }
+
+    /// Returns the text length in bytes.
+    pub fn len(&self) -> usize {
+        self.text.len()
+    }
+
+    /// Returns true when the text is empty.
+    pub fn is_empty(&self) -> bool {
+        self.text.is_empty()
+    }
+
+    /// Consumes self and returns the owned text.
+    pub fn into_string(self) -> String {
+        self.text
+    }
+
+    /// Returns the style at byte `offset`, where `len()` is the end-of-string position.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `offset > len()`.
+    pub fn style_at(&self, offset: usize) -> Style {
+        assert!(
+            offset <= self.text.len(),
+            "style_at offset {} out of bounds for length {}",
+            offset, self.text.len(),
+        );
+        let idx = self.spans.partition_point(|span| span.end <= offset);
+        self.spans.get(idx).map_or(Style::new(), |span| span.style)
+    }
+
+    /// Iterates styled chunks of the text clamped to `range`, never yielding the end-of-string position.
+    pub fn iter_chunks(&self, range: impl std::ops::RangeBounds<usize>) -> impl Iterator<Item = (&str, Style)> + '_ {
+        let (start, end) = range_offsets(range, self.text.len());
+        let end = end.min(self.text.len());
+        let mut pos = start.min(end);
+        let mut span_idx = self.spans.partition_point(|span| span.end <= pos);
+        std::iter::from_fn(move || {
+            if pos >= end {
+                return None;
+            }
+            if self.spans.is_empty() {
+                let chunk = &self.text[pos..end];
+                pos = end;
+                return Some((chunk, Style::new()));
+            }
+            let span = self.spans[span_idx];
+            let chunk_end = span.end.min(end);
+            let chunk = &self.text[pos..chunk_end];
+            pos = chunk_end;
+            span_idx += 1;
+            Some((chunk, span.style))
+        })
+    }
+
+    /// Replaces `range` in the text, styling the replacement with the style at the range start.
+    pub fn replace_range(&mut self, range: impl std::ops::RangeBounds<usize>, replacement: &str) {
+        let (start, end) = range_offsets(range, self.text.len());
+        self.text.replace_range(start..end, replacement);
+        if self.spans.is_empty() {
+            return;
+        }
+        let idx = self.spans.partition_point(|span| span.end <= start);
+        let style = self.spans.get(idx).map_or(Style::new(), |span| span.style);
+        let mut spans = Vec::with_capacity(self.spans.len() + 1);
+        for span in &self.spans {
+            if span.end <= start {
+                spans.push(*span);
+            }
+        }
+        spans.push(Span { style, end: start + replacement.len() });
+        for span in &self.spans {
+            if span.end > end {
+                spans.push(Span { style: span.style, end: span.end - end + start + replacement.len() });
+            }
+        }
+        self.spans = spans;
+        self.collapse_spans();
+    }
+
+    /// Removes all styling, leaving the text untouched.
+    pub fn clear_styles(&mut self) {
+        self.spans.clear();
+    }
+
+    /// Applies `f` to the style of every byte inside `range`, where `len()` is the end-of-string position.
+    pub fn style_range(&mut self, range: impl std::ops::RangeBounds<usize>, f: impl Fn(&mut Style)) {
+        let (start, end) = range_offsets(range, self.text.len());
+        let end = end.min(self.text.len() + 1);
         if start >= end {
             return;
         }
         if self.spans.is_empty() {
             self.spans.push(Span::new(self.text.len() + 1, Style::new()));
         }
-        let mut left_pos = 0;
-        let mut left = 0;
-        while left < self.spans.len() && start > left_pos + self.spans[left].len {
-            left_pos += self.spans[left].len;
-            left += 1;
-        }
-        let mut right_pos = left_pos + self.spans[left].len;
-        let mut right = left;
-        while right < self.spans.len() && end > right_pos {
-            right += 1;
-            right_pos += self.spans[right].len;
-        }
+        let left = self.spans.partition_point(|span| span.end < start);
+        let right = self.spans.partition_point(|span| span.end < end);
         let mut mid_style = self.spans[left].style;
         f(&mut mid_style);
         self.spans.splice(
             left..=right,
             [
                 Span {
-                    len: start - left_pos,
+                    end: start,
                     style: self.spans[left].style,
                 },
                 Span {
-                    len: end - start,
+                    end,
                     style: mid_style,
                 },
                 Span {
-                    len: right_pos - end,
+                    end: self.spans[right].end,
                     style: self.spans[right].style,
                 },
             ],
@@ -514,7 +633,7 @@ impl StyledString {
     }
 
     /// Drops the first `n` bytes from `text` and adjusts spans to match.
-    pub fn trim_left(&mut self, n: usize) {
+    pub fn drop_start(&mut self, n: usize) {
         if n == 0 {
             return;
         }
@@ -523,25 +642,16 @@ impl StyledString {
         if self.spans.is_empty() {
             return;
         }
-        let mut remaining = n;
-        let mut i = 0;
-        while i < self.spans.len() && remaining > 0 {
-            if self.spans[i].len <= remaining {
-                remaining -= self.spans[i].len;
-                i += 1;
-            } else {
-                self.spans[i].len -= remaining;
-                remaining = 0;
-            }
-        }
+        let i = self.spans.partition_point(|span| span.end <= n);
         self.spans.drain(..i);
-        if self.spans.is_empty() {
-            self.spans.push(Span::new(1, Style::new()));
+        for span in &mut self.spans {
+            span.end -= n;
         }
+        self.normalize();
     }
 
     /// Drops the last `n` bytes from `text` and adjusts spans to match.
-    pub fn trim_right(&mut self, n: usize) {
+    pub fn drop_end(&mut self, n: usize) {
         if n == 0 {
             return;
         }
@@ -550,37 +660,57 @@ impl StyledString {
         if self.spans.is_empty() {
             return;
         }
-        let mut remaining = n;
-        while !self.spans.is_empty() && remaining > 0 {
-            let last = self.spans.len() - 1;
-            if self.spans[last].len <= remaining {
-                remaining -= self.spans[last].len;
-                self.spans.pop();
-            } else {
-                self.spans[last].len -= remaining;
-                remaining = 0;
-            }
-        }
-        if self.spans.is_empty() {
-            self.spans.push(Span::new(1, Style::new()));
-        }
+        let new_end = self.text.len() + 1;
+        let i = self.spans.partition_point(|span| span.end < new_end);
+        self.spans.truncate(i + 1);
+        self.spans[i].end = new_end;
+        self.normalize();
     }
 
     /// Merges adjacent spans with equal styles and drops zero-sized spans.
-    pub fn collapse_spans(&mut self) {
+    fn collapse_spans(&mut self) {
         let mut write = 0;
+        let mut prev_end = 0;
         for read in 0..self.spans.len() {
-            if self.spans[read].len == 0 {
+            let span = self.spans[read];
+            if span.end == prev_end {
                 continue;
             }
-            if write > 0 && self.spans[write - 1].style == self.spans[read].style {
-                self.spans[write - 1].len += self.spans[read].len;
+            prev_end = span.end;
+            if write > 0 && self.spans[write - 1].style == span.style {
+                self.spans[write - 1].end = span.end;
             } else {
-                self.spans[write] = self.spans[read];
+                self.spans[write] = span;
                 write += 1;
             }
         }
         self.spans.truncate(write);
+        self.normalize();
+    }
+
+    /// Drops the spans entirely when they reduce to a single all-default run.
+    fn normalize(&mut self) {
+        if self.spans.len() == 1 && self.spans[0].style == Style::new() {
+            self.spans.clear();
+        }
+    }
+}
+
+impl Default for StyledString {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl std::fmt::Display for StyledString {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.text)
+    }
+}
+
+impl AsRef<str> for StyledString {
+    fn as_ref(&self) -> &str {
+        &self.text
     }
 }
 
@@ -753,8 +883,8 @@ impl<'a> From<StyledStr<'a>> for StyledString {
         let len = text.len();
         Self {
             spans: vec![
-                Span { style: span.style, len },
-                Span::new(1, Style::new()),
+                Span { style: span.style, end: len },
+                Span::new(len + 1, Style::new()),
             ],
             text,
         }
@@ -976,6 +1106,12 @@ pub struct AnsiStyleParser {
     style: Style,
 }
 
+impl Default for AnsiStyleParser {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AnsiStyleParser {
     /// Creates a parser starting with default style state.
     pub const fn new() -> Self {
@@ -988,7 +1124,7 @@ impl AnsiStyleParser {
     pub fn parse_line(&mut self, input: &str) -> StyledString {
         let mut text = String::new();
         let mut spans: Vec<Span> = Vec::new();
-        let mut current_span_len: usize = 0;
+        let mut span_start: usize = 0;
         let mut changed = false;
         let bytes = input.as_bytes();
         let len = bytes.len();
@@ -1004,16 +1140,15 @@ impl AnsiStyleParser {
                 }
                 if seq_end >= len {
                     text.push_str(&input[i..]);
-                    current_span_len += len - i;
                     i = len;
                     continue;
                 }
-                if current_span_len > 0 {
+                if text.len() > span_start {
                     spans.push(Span {
                         style: self.style,
-                        len: current_span_len,
+                        end: text.len(),
                     });
-                    current_span_len = 0;
+                    span_start = text.len();
                 }
                 let params_str = &input[seq_start..seq_end];
                 let params: Vec<u16> = if params_str.is_empty() {
@@ -1046,20 +1181,20 @@ impl AnsiStyleParser {
                         29 => self.style.set_strikethrough(false),
                         30..=37 => {
                             self.style.fg =
-                                Some(Color::Base256((params[p] - 30) as u8))
+                                Some(Color::Indexed((params[p] - 30) as u8))
                         }
                         39 => self.style.fg = None,
                         40..=47 => {
                             self.style.bg =
-                                Some(Color::Base256((params[p] - 40) as u8))
+                                Some(Color::Indexed((params[p] - 40) as u8))
                         }
                         49 => self.style.bg = None,
                         90..=97 => {
                             self.style.fg =
-                                Some(Color::Base256((params[p] - 90 + 8) as u8))
+                                Some(Color::Indexed((params[p] - 90 + 8) as u8))
                         }
                         100..=107 => {
-                            self.style.bg = Some(Color::Base256(
+                            self.style.bg = Some(Color::Indexed(
                                 (params[p] - 100 + 8) as u8,
                             ))
                         }
@@ -1069,7 +1204,7 @@ impl AnsiStyleParser {
                                     5 => {
                                         if p + 2 < params.len() {
                                             self.style.fg =
-                                                Some(Color::Base256(
+                                                Some(Color::Indexed(
                                                     params[p + 2] as u8,
                                                 ));
                                             p += 2;
@@ -1095,7 +1230,7 @@ impl AnsiStyleParser {
                                     5 => {
                                         if p + 2 < params.len() {
                                             self.style.bg =
-                                                Some(Color::Base256(
+                                                Some(Color::Indexed(
                                                     params[p + 2] as u8,
                                                 ));
                                             p += 2;
@@ -1132,7 +1267,6 @@ impl AnsiStyleParser {
                 };
                 let end = (i + char_len).min(len);
                 text.push_str(&input[i..end]);
-                current_span_len += end - i;
                 i = end;
             }
         }
@@ -1143,7 +1277,7 @@ impl AnsiStyleParser {
 
         spans.push(Span {
             style: self.style,
-            len: current_span_len,
+            end: text.len() + 1,
         });
 
         StyledString { text, spans }

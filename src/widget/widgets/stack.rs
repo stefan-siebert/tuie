@@ -1,7 +1,7 @@
 //! Container that overlays layer widgets on top of a base widget.
 
 use crate::prelude::*;
-use crate::widget::get_flow_output_size_layout;
+use crate::widget::flow_output_size;
 
 /// Container that overlays one or more layer widgets on top of a base widget.
 pub struct Stack {
@@ -24,7 +24,7 @@ impl Stack {
         predicate: &dyn Fn(&dyn Widget) -> bool,
         mut path: Option<&mut Vec<WidgetId>>,
     ) -> Option<WidgetId> {
-        if let Some(found) = child.find_descendant(predicate, path.as_mut().map(|p| &mut **p)) {
+        if let Some(found) = child.find_descendant(predicate, path.as_deref_mut()) {
             if let Some(p) = &mut path {
                 p.push(child.get_id());
             }
@@ -48,7 +48,7 @@ impl Stack {
             return None;
         }
         let hit = child
-            .descendant_at_pos(pos, path.as_mut().map(|p| &mut **p))
+            .descendant_at_pos(pos, path.as_deref_mut())
             .unwrap_or_else(|| child.get_id());
         if let Some(p) = &mut path {
             p.push(child.get_id());
@@ -64,7 +64,7 @@ impl Stack {
         if !Self::contains_pos(layer, pos) {
             return None;
         }
-        let hit = layer.descendant_at_pos(pos, path.as_mut().map(|p| &mut **p))?;
+        let hit = layer.descendant_at_pos(pos, path.as_deref_mut())?;
         if let Some(p) = &mut path {
             p.push(layer.get_id());
         }
@@ -80,7 +80,7 @@ impl Stack {
         if !Self::contains_pos(child, pos) {
             return None;
         }
-        if let Some(found) = child.find_descendant_at_pos(pos, predicate, path.as_mut().map(|p| &mut **p)) {
+        if let Some(found) = child.find_descendant_at_pos(pos, predicate, path.as_deref_mut()) {
             if let Some(p) = &mut path {
                 p.push(child.get_id());
             }
@@ -104,7 +104,7 @@ impl Stack {
         if !Self::contains_pos(layer, pos) {
             return None;
         }
-        let found = layer.find_descendant_at_pos(pos, predicate, path.as_mut().map(|p| &mut **p))?;
+        let found = layer.find_descendant_at_pos(pos, predicate, path.as_deref_mut())?;
         if let Some(p) = &mut path {
             p.push(layer.get_id());
         }
@@ -177,20 +177,20 @@ impl Widget for Stack {
             let size = Self::clamp_layer_size(&**layer, allocated, |l| l.constraints.min_size);
             flow_child(&mut **layer, size);
         }
-        let base_clamped = Self::clamp_base_size(&*self.base, allocated, |l| get_flow_output_size_layout(l));
+        let base_clamped = Self::clamp_base_size(&*self.base, allocated, flow_output_size);
         let base_margin = self.base.get_layout().get_margin_total();
         self.base.set_rect_size(Axis2D::map(|a| base_clamped[a].saturating_sub(base_margin[a])));
         for layer in self.layers.iter_mut() {
-            let size = Self::clamp_layer_size(&**layer, allocated, |l| get_flow_output_size_layout(l));
+            let size = Self::clamp_layer_size(&**layer, allocated, flow_output_size);
             let margin = layer.get_layout().get_margin_total();
             layer.set_rect_size(Axis2D::map(|a| size[a].saturating_sub(margin[a])));
         }
-        get_flow_output_size_layout(self.base.get_layout())
+        flow_output_size(self.base.get_layout())
     }
 
     fn layout_measure(&self, allocated: Vec2<u16>) -> Vec2<u16> {
         let base_size = Self::clamp_base_size(&*self.base, allocated, |l| l.constraints.min_size);
-        flow_child_measure(&*self.base, base_size)
+        measure_child(&*self.base, base_size)
     }
 
     fn layout_position(&mut self) {
@@ -207,8 +207,8 @@ impl Widget for Stack {
 
     fn render(&self, mut ctx: RenderContext) {
         let mut clear_style = self.layout.style;
-        if clear_style.bg.is_none() {
-            clear_style.bg = Some(Color::Background);
+        if clear_style.get_bg().is_none() {
+            clear_style.set_bg(Some(Color::Background));
         }
         ctx.set_style(clear_style);
         ctx.clear();
@@ -228,7 +228,7 @@ impl Widget for Stack {
         mut path: Option<&mut Vec<WidgetId>>,
     ) -> Option<WidgetId> {
         for layer in self.layers.iter().rev() {
-            if let Some(r) = Self::find_in_child(&**layer, predicate, path.as_mut().map(|p| &mut **p)) {
+            if let Some(r) = Self::find_in_child(&**layer, predicate, path.as_deref_mut()) {
                 return Some(r);
             }
         }
@@ -283,7 +283,7 @@ impl Widget for Stack {
         mut path: Option<&mut Vec<WidgetId>>,
     ) -> Option<WidgetId> {
         for layer in self.layers.iter().rev() {
-            if let Some(r) = Self::hit_layer(&**layer, pos, path.as_mut().map(|p| &mut **p)) {
+            if let Some(r) = Self::hit_layer(&**layer, pos, path.as_deref_mut()) {
                 return Some(r);
             }
         }
@@ -297,7 +297,7 @@ impl Widget for Stack {
         mut path: Option<&mut Vec<WidgetId>>,
     ) -> Option<WidgetId> {
         for layer in self.layers.iter().rev() {
-            if let Some(r) = Self::find_hit_layer(&**layer, pos, predicate, path.as_mut().map(|p| &mut **p)) {
+            if let Some(r) = Self::find_hit_layer(&**layer, pos, predicate, path.as_deref_mut()) {
                 return Some(r);
             }
         }

@@ -42,7 +42,6 @@ macro_rules! field {
         $crate::field!(@walk_path [$(#[$attr])*] $name [$($g)?] [$($ty)+] [$($acc)+ $tok] $($rest)*);
     };
 
-    // @type_presence — resolve getter name (override `$g`, else `is_$name`) into a single ident.
     (@type_presence [$(#[$attr:meta])*] $name:ident [$g:ident] [$($dirty:ident)?] [$($p:tt)+] bool) => {
         $crate::field!(@emit_presence [$(#[$attr])*] $name [$g] [$($dirty)?] [$($p)+]);
     };
@@ -52,7 +51,6 @@ macro_rules! field {
         }
     };
 
-    // @type — resolve getter name (override `$g`, else `is_$name`/`get_$name`) and dispatch by shape.
     (@type [$(#[$attr:meta])*] $name:ident [$g:ident] [$($dirty:ident)?] [$($p:tt)+] bool) => {
         $crate::field!(@path [$(#[$attr])*] (bool) $name [$g] [$($dirty)?] $($p)+);
     };

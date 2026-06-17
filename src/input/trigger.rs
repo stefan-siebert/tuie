@@ -4,6 +4,7 @@ use crate::prelude::*;
 
 /// Specific action that initiated an input event.
 #[derive(Clone, PartialEq, Debug)]
+#[non_exhaustive]
 pub enum Trigger {
     /// Key press.
     Key(Key),

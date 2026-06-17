@@ -8,15 +8,16 @@ pub type InputBindingsFactory = fn() -> Box<dyn InputBindings<Text>>;
 
 /// Process-wide visual and behavioral settings for [`Input`].
 #[derive(Clone, Copy)]
+#[non_exhaustive]
 pub struct InputConfig {
     /// Style applied to the selected text range.
-    pub highlight_style: Style,
+    pub selected_style: Style,
     /// Factory used to construct the bindings for new [`Input`] instances.
     pub bindings: InputBindingsFactory,
 }
 
 crate::config_module!(InputConfig {
-    highlight_style: Style::new().fg(Color::BLUE).reverse(),
+    selected_style: Style::new().fg(Color::BLUE).reverse(),
     bindings: DefaultBindings::new,
 });
 
@@ -48,16 +49,17 @@ impl Input {
         };
         let new_cursor = (cursor_idx - newlines_before(cursor_idx)).min(stripped_len);
         let new_anchor = (anchor_idx - newlines_before(anchor_idx)).min(stripped_len);
-        self.editor
-            .replace_all_with_selection(&mut *self.text, &stripped, new_cursor, new_anchor);
+        let len = self.text.len();
+        self.editor.replace_range(&mut *self.text, 0..len, &stripped);
+        self.editor.set_selection(&*self.text, new_cursor, new_anchor);
     }
 
     fn update_highlight(&mut self) {
         self.text.clear_highlight();
-        let (start, end) = self.editor.get_highlight_range(&*self.text);
-        if start != end {
-            let style = self.selected_style.unwrap_or_else(|| config::get().highlight_style);
-            self.text.highlight(start, end, style);
+        let range = self.editor.get_selected_range(&*self.text);
+        if !range.is_empty() {
+            let style = self.selected_style.unwrap_or_else(|| config::get().selected_style);
+            self.text.highlight(range, style);
         }
     }
 
@@ -138,7 +140,7 @@ impl DelegateWidget for Input {
         if selected.is_some() {
             return None;
         }
-        let cursor_idx = self.editor.get_cursor_pos(&*self.text);
+        let cursor_idx = self.editor.get_cursor_index(&*self.text);
         let pos = self.text.index_to_virtual_pos(cursor_idx, self.editor.get_wrap_bias());
         Some((self.editor.get_cursor_shape(), pos.map(|v| v as i32)))
     }
@@ -147,9 +149,9 @@ impl DelegateWidget for Input {
         &mut self,
         _child: Option<WidgetId>,
         revelation: &mut Revelation,
-        _scroll_align: Vec2<Option<Align>>,
+        _align: Vec2<Option<Align>>,
     ) {
-        let cursor_idx = self.editor.get_cursor_pos(&*self.text);
+        let cursor_idx = self.editor.get_cursor_index(&*self.text);
         let cursor_pos = self
             .text
             .index_to_virtual_pos(cursor_idx, self.editor.get_wrap_bias())
@@ -258,6 +260,12 @@ impl Input {
     /// Sets the placeholder shown when the input is empty.
     pub fn placeholder(mut self: Box<Self>, placeholder: Box<Text>) -> Box<Self> {
         self.set_placeholder(Some(placeholder));
+        self
+    }
+
+    /// Builder form of [`Input::set_placeholder`] accepting an `Option`.
+    pub fn placeholder_opt(mut self: Box<Self>, placeholder: Option<Box<Text>>) -> Box<Self> {
+        self.set_placeholder(placeholder);
         self
     }
 

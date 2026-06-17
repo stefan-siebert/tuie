@@ -96,6 +96,12 @@ pub trait Clipboard {
 /// In-memory [`Clipboard`] implementation.
 pub struct LocalClipboard(Box<[ClipboardItem]>);
 
+impl Default for LocalClipboard {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl LocalClipboard {
     /// Creates an empty in-memory clipboard.
     pub fn new() -> Self {

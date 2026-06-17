@@ -1,6 +1,6 @@
 use chord_macro::chord;
 use tuie::prelude::*;
-use tuie::test::TestTerminal;
+use tuie::emulator::Emulator;
 
 fn pane_with_text(s: &str) -> Box<Pane> {
     Pane::new().children([Text::new().content(s.to_string())])
@@ -9,12 +9,12 @@ fn pane_with_text(s: &str) -> Box<Pane> {
 #[test]
 fn renders_two_pane_horizontal_split() {
     let mut split = Split::new(
-        SplitPane::horizontal().children([
+        SplitPane::new().horizontal().children([
             SplitPaneChild::from(pane_with_text("L")),
             SplitPaneChild::from(pane_with_text("R")),
         ]),
     );
-    let term = TestTerminal::new(&mut *split, Vec2::new(10, 3));
+    let term = Emulator::new(&mut *split, Vec2::new(10, 3));
     let snap = term.get_snapshot_text();
     let rows: Vec<&str> = snap.split('\n').collect();
     assert_eq!(rows.len(), 3);
@@ -31,12 +31,12 @@ fn renders_two_pane_horizontal_split() {
 #[test]
 fn renders_two_pane_vertical_split() {
     let mut split = Split::new(
-        SplitPane::vertical().children([
+        SplitPane::new().children([
             SplitPaneChild::from(pane_with_text("top")),
             SplitPaneChild::from(pane_with_text("bot")),
         ]),
     );
-    let term = TestTerminal::new(&mut *split, Vec2::new(10, 8));
+    let term = Emulator::new(&mut *split, Vec2::new(10, 8));
     let snap = term.get_snapshot_text();
     let rows: Vec<&str> = snap.split('\n').collect();
     assert_eq!(rows.len(), 8);
@@ -49,13 +49,13 @@ fn renders_two_pane_vertical_split() {
 #[test]
 fn renders_three_pane_horizontal_split() {
     let mut split = Split::new(
-        SplitPane::horizontal().children([
+        SplitPane::new().horizontal().children([
             SplitPaneChild::from(pane_with_text("A")),
             SplitPaneChild::from(pane_with_text("B")),
             SplitPaneChild::from(pane_with_text("C")),
         ]),
     );
-    let term = TestTerminal::new(&mut *split, Vec2::new(15, 3));
+    let term = Emulator::new(&mut *split, Vec2::new(15, 3));
     let snap = term.get_snapshot_text();
     assert!(snap.contains('A'));
     assert!(snap.contains('B'));
@@ -71,12 +71,12 @@ fn flex_ratio_distributes_widths() {
     let left = Pane::new().flex(1).children([Text::new().content("L")]);
     let right = Pane::new().flex(3).children([Text::new().content("R")]);
     let mut split = Split::new(
-        SplitPane::horizontal().children([
+        SplitPane::new().horizontal().children([
             SplitPaneChild::from(left),
             SplitPaneChild::from(right),
         ]),
     );
-    let term = TestTerminal::new(&mut *split, Vec2::new(20, 3));
+    let term = Emulator::new(&mut *split, Vec2::new(20, 3));
     let top = term.get_snapshot_text().split('\n').next().unwrap().to_string();
     let pivot_col = top.chars().position(|c| c == '│').expect("vertical divider on top row");
     let left_cells = pivot_col;
@@ -92,17 +92,17 @@ fn flex_ratio_distributes_widths() {
 
 #[test]
 fn nested_splits_render() {
-    let inner = SplitPane::vertical().children([
+    let inner = SplitPane::new().children([
         SplitPaneChild::from(pane_with_text("TR")),
         SplitPaneChild::from(pane_with_text("BR")),
     ]);
     let mut split = Split::new(
-        SplitPane::horizontal().children([
+        SplitPane::new().horizontal().children([
             SplitPaneChild::from(pane_with_text("L")),
             SplitPaneChild::from(inner),
         ]),
     );
-    let term = TestTerminal::new(&mut *split, Vec2::new(14, 7));
+    let term = Emulator::new(&mut *split, Vec2::new(14, 7));
     let snap = term.get_snapshot_text();
     assert!(snap.contains('L'));
     assert!(snap.contains("TR"));
@@ -114,12 +114,12 @@ fn nested_splits_render() {
 #[test]
 fn resize_reflows_split() {
     let mut split = Split::new(
-        SplitPane::horizontal().children([
+        SplitPane::new().horizontal().children([
             SplitPaneChild::from(pane_with_text("L")),
             SplitPaneChild::from(pane_with_text("R")),
         ]),
     );
-    let mut term = TestTerminal::new(&mut *split, Vec2::new(10, 3));
+    let mut term = Emulator::new(&mut *split, Vec2::new(10, 3));
     let small_top = term.get_snapshot_text().split('\n').next().unwrap().to_string();
     assert_eq!(small_top.chars().count(), 10);
 
@@ -139,12 +139,12 @@ fn mouse_drag_moves_divider() {
     let left = Pane::new().flex(1).children([Text::new().content("L")]);
     let right = Pane::new().flex(1).children([Text::new().content("R")]);
     let mut split = Split::new(
-        SplitPane::horizontal().children([
+        SplitPane::new().horizontal().children([
             SplitPaneChild::from(left),
             SplitPaneChild::from(right),
         ]),
     );
-    let mut term = TestTerminal::new(&mut *split, Vec2::new(20, 5));
+    let mut term = Emulator::new(&mut *split, Vec2::new(20, 5));
     let before_top = term.get_snapshot_text().split('\n').next().unwrap().to_string();
     let before_pivot = before_top.chars().position(|c| c == '│').expect("vertical divider on top row") as i32;
 
@@ -173,14 +173,14 @@ fn mouse_drag_moves_divider() {
 #[test]
 fn outer_border_wraps_split() {
     let mut split = Split::new(
-        SplitPane::horizontal().children([
+        SplitPane::new().horizontal().children([
             SplitPaneChild::from(pane_with_text("L")).borderless(),
             SplitPaneChild::from(pane_with_text("R")).borderless(),
         ]),
     )
     .bordered()
     .border(Border::SINGLE);
-    let term = TestTerminal::new(&mut *split, Vec2::new(10, 3));
+    let term = Emulator::new(&mut *split, Vec2::new(10, 3));
     term.assert_lines([
         "┌────────┐",
         "│LR      │",
@@ -193,7 +193,7 @@ fn minimum_width_constraint_respected() {
     let left = Pane::new().min_width(8).children([Text::new().content("L")]);
     let right = Pane::new().min_width(8).children([Text::new().content("R")]);
     let mut split = Split::new(
-        SplitPane::horizontal().children([
+        SplitPane::new().horizontal().children([
             SplitPaneChild::from(left).borderless(),
             SplitPaneChild::from(right).borderless(),
         ]),
@@ -215,13 +215,13 @@ fn remove_collapses_pane() {
     let mid_id = mid.get_id();
     let right_id = right.get_id();
     let mut split = Split::new(
-        SplitPane::horizontal().children([
+        SplitPane::new().horizontal().children([
             SplitPaneChild::from(left),
             SplitPaneChild::from(mid),
             SplitPaneChild::from(right),
         ]),
     );
-    let term = TestTerminal::new(&mut *split, Vec2::new(15, 3));
+    let term = Emulator::new(&mut *split, Vec2::new(15, 3));
     let before = term.get_snapshot_text();
     assert!(before.contains('M'));
     assert!(split.contains(mid_id));
@@ -232,7 +232,7 @@ fn remove_collapses_pane() {
     assert!(split.contains(left_id));
     assert!(split.contains(right_id));
 
-    let term = TestTerminal::new(&mut *split, Vec2::new(15, 3));
+    let term = Emulator::new(&mut *split, Vec2::new(15, 3));
     let after = term.get_snapshot_text();
     assert!(after.contains('L'));
     assert!(after.contains('R'));
@@ -246,9 +246,9 @@ fn remove_collapses_pane() {
 fn split_root_adds_pane_at_runtime() {
     let first = pane_with_text("1");
     let mut split = Split::new(
-        SplitPane::horizontal().children([SplitPaneChild::from(first)]),
+        SplitPane::new().horizontal().children([SplitPaneChild::from(first)]),
     );
-    let mut term = TestTerminal::new(&mut *split, Vec2::new(20, 3));
+    let mut term = Emulator::new(&mut *split, Vec2::new(20, 3));
     assert!(term.get_snapshot_text().contains('1'));
 
     split.split_root(

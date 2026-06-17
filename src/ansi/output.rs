@@ -155,7 +155,7 @@ fn write_fg(out: &mut String, color: Color) {
             }
             push_bytes(out, b"39");
         }
-        Color::Base256(n) => match n {
+        Color::Indexed(n) => match n {
             0..=7 => push_u8(out, 30 + n),
             8..=15 => push_u8(out, 90 + (n - 8)),
             n => {
@@ -178,7 +178,7 @@ fn write_bg(out: &mut String, color: Color) {
             }
             push_bytes(out, b"49");
         }
-        Color::Base256(n) => match n {
+        Color::Indexed(n) => match n {
             0..=7 => push_u8(out, 40 + n),
             8..=15 => push_u8(out, 100 + (n - 8)),
             n => {
@@ -206,7 +206,7 @@ fn write_underline_type(out: &mut String, ty: UnderlineType) {
 fn write_underline_color(out: &mut String, color: Color) {
     match color {
         Color::Foreground | Color::Background => push_bytes(out, b"59"),
-        Color::Base256(n) => {
+        Color::Indexed(n) => {
             push_bytes(out, b"58:5:");
             push_u8(out, n);
         }

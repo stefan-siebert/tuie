@@ -2,6 +2,7 @@
 
 /// Mouse button identifier.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[non_exhaustive]
 pub enum MouseButton {
     /// Left mouse button.
     Left,

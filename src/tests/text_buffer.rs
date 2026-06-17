@@ -1,7 +1,7 @@
 //! Tests for the text buffer, cursor, layout, and document traits.
 
 use tuie::prelude::*;
-use tuie::test::TestTerminal;
+use tuie::emulator::Emulator;
 
 fn make_text(s: &str) -> Box<Text> {
     Text::new().content(s)
@@ -20,16 +20,16 @@ fn buffer_len_matches_byte_length() {
 #[test]
 fn buffer_slice_returns_copied_substring() {
     let t = make_text("hello world");
-    assert_eq!(t.slice(0, 5), "hello");
-    assert_eq!(t.slice(6, 11), "world");
-    assert_eq!(t.slice(5, 6), " ");
-    assert_eq!(t.slice(0, 0), "");
+    assert_eq!(t.slice(0..5), "hello");
+    assert_eq!(t.slice(6..11), "world");
+    assert_eq!(t.slice(5..6), " ");
+    assert_eq!(t.slice(0..0), "");
 }
 
 #[test]
 fn buffer_replace_range_inserts_at_start() {
     let mut t = make_text("world");
-    t.replace_range(0, 0, "hello ");
+    t.replace_range(0..0, "hello ");
     assert_eq!(t.get_string(), "hello world");
     assert_eq!(t.len(), 11);
 }
@@ -38,21 +38,21 @@ fn buffer_replace_range_inserts_at_start() {
 fn buffer_replace_range_inserts_at_end() {
     let mut t = make_text("hello");
     let len = t.len();
-    t.replace_range(len, len, " world");
+    t.replace_range(len..len, " world");
     assert_eq!(t.get_string(), "hello world");
 }
 
 #[test]
 fn buffer_replace_range_deletes_substring() {
     let mut t = make_text("hello world");
-    t.replace_range(5, 11, "");
+    t.replace_range(5..11, "");
     assert_eq!(t.get_string(), "hello");
 }
 
 #[test]
 fn buffer_replace_range_substitutes() {
     let mut t = make_text("hello world");
-    t.replace_range(6, 11, "rust!");
+    t.replace_range(6..11, "rust!");
     assert_eq!(t.get_string(), "hello rust!");
 }
 
@@ -69,9 +69,9 @@ fn buffer_is_char_boundary_handles_multibyte() {
 #[test]
 fn buffer_chunks_yields_full_range_for_string_backed() {
     let t = make_text("hello world");
-    let collected: String = t.chunks(0, 11).collect();
+    let collected: String = t.chunks(0..11).collect();
     assert_eq!(collected, "hello world");
-    let partial: String = t.chunks(6, 11).collect();
+    let partial: String = t.chunks(6..11).collect();
     assert_eq!(partial, "world");
 }
 
@@ -79,9 +79,9 @@ fn buffer_chunks_yields_full_range_for_string_backed() {
 fn buffer_insert_then_delete_round_trips() {
     let mut t = make_text("hello");
     let original = t.get_string();
-    t.replace_range(2, 2, "XYZ");
+    t.replace_range(2..2, "XYZ");
     assert_eq!(t.get_string(), "heXYZllo");
-    t.replace_range(2, 5, "");
+    t.replace_range(2..5, "");
     assert_eq!(t.get_string(), original);
     assert_eq!(t.len(), 5);
 }
@@ -369,19 +369,19 @@ fn document_end_on_empty_buffer_is_zero() {
 }
 
 #[test]
-fn move_document_end_directional() {
+fn move_document_edge_directional() {
     let t = make_text("abc");
     let mut c = t.cursor(1);
-    c.move_document_end(&*t, Sign::Positive);
+    c.move_document_edge(&*t, Sign::Positive);
     assert_eq!(c.get_index(), 3);
-    c.move_document_end(&*t, Sign::Negative);
+    c.move_document_edge(&*t, Sign::Negative);
     assert_eq!(c.get_index(), 0);
 }
 
 #[test]
 fn layout_index_to_pos_maps_single_line() {
     let mut t = make_text("hello");
-    let _term = TestTerminal::new(&mut *t, Vec2::new(10, 1));
+    let _term = Emulator::new(&mut *t, Vec2::new(10, 1));
     assert_eq!(t.index_to_virtual_pos(0, Sign::Positive), Vec2::new(0, 0));
     assert_eq!(t.index_to_virtual_pos(3, Sign::Positive), Vec2::new(3, 0));
     assert_eq!(t.index_to_virtual_pos(5, Sign::Positive), Vec2::new(5, 0));
@@ -390,7 +390,7 @@ fn layout_index_to_pos_maps_single_line() {
 #[test]
 fn layout_index_to_pos_maps_multiple_lines() {
     let mut t = make_text("ab\ncd");
-    let _term = TestTerminal::new(&mut *t, Vec2::new(5, 2));
+    let _term = Emulator::new(&mut *t, Vec2::new(5, 2));
     assert_eq!(t.index_to_virtual_pos(0, Sign::Positive), Vec2::new(0, 0));
     assert_eq!(t.index_to_virtual_pos(2, Sign::Positive), Vec2::new(2, 0));
     assert_eq!(t.index_to_virtual_pos(3, Sign::Positive), Vec2::new(0, 1));
@@ -400,7 +400,7 @@ fn layout_index_to_pos_maps_multiple_lines() {
 #[test]
 fn layout_pos_to_index_round_trips() {
     let mut t = make_text("hello\nworld");
-    let _term = TestTerminal::new(&mut *t, Vec2::new(10, 2));
+    let _term = Emulator::new(&mut *t, Vec2::new(10, 2));
     for i in 0..=t.len() {
         let pos = t.index_to_virtual_pos(i, Sign::Negative);
         let back = t.pos_to_index(pos);
@@ -411,7 +411,7 @@ fn layout_pos_to_index_round_trips() {
 #[test]
 fn layout_get_visible_size_matches_terminal_size() {
     let mut t = make_text("hi");
-    let _term = TestTerminal::new(&mut *t, Vec2::new(20, 5));
+    let _term = Emulator::new(&mut *t, Vec2::new(20, 5));
     let size = TextLayout::get_visible_size(&*t);
     assert_eq!(size, Vec2::new(20, 5));
 }
@@ -421,7 +421,7 @@ fn insert_then_back_delete_at_cursor_round_trips() {
     let mut t = make_text("abcdef");
     let mut c = t.cursor(3);
     let pos = c.get_index();
-    t.replace_range(pos, pos, "XYZ");
+    t.replace_range(pos..pos, "XYZ");
     c.set_index(&*t, pos + 3);
     assert_eq!(t.get_string(), "abcXYZdef");
     assert_eq!(c.get_index(), 6);
@@ -431,7 +431,7 @@ fn insert_then_back_delete_at_cursor_round_trips() {
     }
     let lo = start.get_index();
     let hi = c.get_index();
-    t.replace_range(lo, hi, "");
+    t.replace_range(lo..hi, "");
     c.set_index(&*t, lo);
     assert_eq!(t.get_string(), "abcdef");
     assert_eq!(c.get_index(), 3);

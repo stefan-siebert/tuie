@@ -145,6 +145,7 @@ impl Border {
 
 /// Default border glyph sets and styles applied when widgets render frames.
 #[derive(Clone, Copy)]
+#[non_exhaustive]
 pub struct BorderConfig {
     /// Glyph set used for unselected widget borders.
     pub border: &'static Border,

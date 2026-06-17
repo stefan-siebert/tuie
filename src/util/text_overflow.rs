@@ -51,6 +51,7 @@ impl<'a> DoubleEndedIterator for AsciiCursor<'a> {
 }
 
 /// One visual line emitted by [`TextOverflowLineIterator`].
+#[non_exhaustive]
 pub struct TextOverflowLineResult<'a> {
     /// Row index in the output area, starting at 0.
     pub y: usize,
@@ -76,9 +77,9 @@ pub struct TextOverflowLineIterator<'a> {
     align: Align,
     max_size: Vec2<usize>,
     /// Byte offset into the source text of the next line to emit.
-    pub offset: usize,
+    offset: usize,
     /// 1-based row counter for the next line to emit.
-    pub height: usize,
+    height: usize,
     truncated_marker: (&'static str, usize),
     word_break_marker: (&'static str, usize),
     lines: std::str::Split<'a, char>,
@@ -100,9 +101,9 @@ impl<'a> TextOverflowLineIterator<'a> {
     ) -> Self {
         let truncate_str = config.truncate.unwrap_or("");
         let mut truncated_marker_width =
-            tuie::terminal_display_width(truncate_str);
+            tuie::display_width(truncate_str);
         let mut word_break_marker_width =
-            tuie::terminal_display_width(config.word_break);
+            tuie::display_width(config.word_break);
         if max_size.x <= truncated_marker_width {
             config.truncate = Some("");
             truncated_marker_width = 0;
@@ -145,7 +146,7 @@ impl<'a> TextOverflowLineIterator<'a> {
     ) -> TextOverflowLineResult<'a> {
         let pad_left = match self.align {
             Align::Start => 0,
-            Align::Middle => (self.max_size.x.saturating_sub(width)) / 2,
+            Align::Center => (self.max_size.x.saturating_sub(width)) / 2,
             Align::End => self.max_size.x.saturating_sub(width + marker.1),
         };
         let result = TextOverflowLineResult {
@@ -337,15 +338,15 @@ impl<'a> TextOverflowLineIterator<'a> {
         }
 
         if total_width > self.max_size.x {
-            if self.align == Align::Middle && !self.config.wrap {
-                let overflow_columns = tuie::terminal_display_width(line)
+            if self.align == Align::Center && !self.config.wrap {
+                let overflow_columns = tuie::display_width(line)
                     .saturating_sub(self.max_size.x) / 2;
                 let mut skipped_width = 0usize;
                 let mut skip_end = 0usize;
                 let mut shown_width = 0usize;
                 let mut shown_end = line.len();
                 for (i, g) in line.grapheme_indices(true) {
-                    let grapheme_width = tuie::terminal_grapheme_width(g) as usize;
+                    let grapheme_width = tuie::grapheme_width(g);
                     if skipped_width < overflow_columns {
                         skipped_width += grapheme_width;
                         skip_end = i + g.len();
@@ -415,7 +416,7 @@ impl<'a> TextOverflowLineIterator<'a> {
             let mut trailing_whitespace = false;
             if self.config.trim {
                 trimmed_line = partial_line.trim_end();
-                width -= tuie::terminal_display_width(
+                width -= tuie::display_width(
                     &partial_line[trimmed_line.len()..],
                 );
                 trimmed_remaining = remaining.trim_start();
@@ -424,7 +425,7 @@ impl<'a> TextOverflowLineIterator<'a> {
                 if trimmed_line.is_empty() {
                     trimmed_line = partial_line;
                 } else {
-                    width -= tuie::terminal_display_width(
+                    width -= tuie::display_width(
                         &partial_line[trimmed_line.len()..],
                     );
                     let mut trimmed_len =
@@ -502,78 +503,114 @@ impl<'a> Iterator for TextOverflowLineIterator<'a> {
 /// Strategy for fitting text into a bounded area.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct TextOverflow {
-    /// Whether to break at word-class boundaries rather than mid-grapheme.
-    pub split: bool,
-    /// Whether to wrap overflowing content onto a new line.
-    pub wrap: bool,
-    /// Whether to drop whitespace at the wrap point.
-    pub trim: bool,
-    /// Marker appended when content is truncated, or `None` to allow overflow.
-    pub truncate: Option<&'static str>,
-    /// Marker appended at a mid-word wrap point.
-    pub word_break: &'static str,
+    split: bool,
+    wrap: bool,
+    trim: bool,
+    truncate: Option<&'static str>,
+    word_break: &'static str,
+}
+
+impl Default for TextOverflow {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl TextOverflow {
     /// Single-line truncation with a trailing ellipsis at a word boundary.
-    pub const ELLIPSIS: &'static TextOverflow = &TextOverflow {
-        split: true,
-        wrap: false,
-        trim: true,
-        truncate: Some("…"),
-        word_break: "",
-    };
+    pub const ELLIPSIS: &'static TextOverflow =
+        &TextOverflow::new().split(true).trim(true).truncate(Some("…"));
 
     /// Single-line clip without a visible marker.
-    pub const TRUNCATE: &'static TextOverflow = &TextOverflow {
-        split: false,
-        wrap: false,
-        trim: false,
-        truncate: Some(""),
-        word_break: "",
-    };
+    pub const TRUNCATE: &'static TextOverflow =
+        &TextOverflow::new().truncate(Some(""));
 
     /// Full text rendered without clipping or wrapping.
-    pub const VISIBLE: &'static TextOverflow = &TextOverflow {
-        split: false,
-        wrap: false,
-        trim: false,
-        truncate: None,
-        word_break: "",
-    };
+    pub const VISIBLE: &'static TextOverflow = &TextOverflow::new();
 
     /// Word-boundary wrapping with a hyphen at mid-word breaks.
-    pub const WORD_WRAP: &'static TextOverflow = &TextOverflow {
-        split: true,
-        wrap: true,
-        trim: true,
-        truncate: None,
-        word_break: "-",
-    };
+    pub const WORD_WRAP: &'static TextOverflow =
+        &TextOverflow::new().split(true).wrap(true).trim(true).word_break("-");
 
     /// Grapheme-level wrapping at the right edge.
-    pub const WRAP: &'static TextOverflow = &TextOverflow {
-        split: false,
-        wrap: true,
-        trim: false,
-        truncate: None,
-        word_break: "",
-    };
+    pub const WRAP: &'static TextOverflow = &TextOverflow::new().wrap(true);
+
+    /// Creates a strategy equal to [`TextOverflow::VISIBLE`].
+    pub const fn new() -> Self {
+        Self {
+            split: false,
+            wrap: false,
+            trim: false,
+            truncate: None,
+            word_break: "",
+        }
+    }
+
+    /// Sets whether to break at word-class boundaries rather than mid-grapheme.
+    pub const fn split(mut self, split: bool) -> Self {
+        self.split = split;
+        self
+    }
+
+    /// Sets whether to wrap overflowing content onto a new line.
+    pub const fn wrap(mut self, wrap: bool) -> Self {
+        self.wrap = wrap;
+        self
+    }
+
+    /// Sets whether to drop whitespace at the wrap point.
+    pub const fn trim(mut self, trim: bool) -> Self {
+        self.trim = trim;
+        self
+    }
+
+    /// Sets the marker appended when content is truncated, or `None` to allow overflow.
+    pub const fn truncate(mut self, truncate: Option<&'static str>) -> Self {
+        self.truncate = truncate;
+        self
+    }
+
+    /// Sets the marker appended at a mid-word wrap point.
+    pub const fn word_break(mut self, word_break: &'static str) -> Self {
+        self.word_break = word_break;
+        self
+    }
+
+    /// Returns whether to break at word-class boundaries rather than mid-grapheme.
+    pub const fn splits(&self) -> bool {
+        self.split
+    }
+
+    /// Returns whether to wrap overflowing content onto a new line.
+    pub const fn wraps(&self) -> bool {
+        self.wrap
+    }
+
+    /// Returns whether to drop whitespace at the wrap point.
+    pub const fn trims(&self) -> bool {
+        self.trim
+    }
+
+    /// Returns the marker appended when content is truncated, or `None` when overflow is allowed.
+    pub const fn get_truncate(&self) -> Option<&'static str> {
+        self.truncate
+    }
+
+    /// Returns the marker appended at a mid-word wrap point.
+    pub const fn get_word_break(&self) -> &'static str {
+        self.word_break
+    }
 
     /// Returns the display width of `grapheme` in cells at column `col`, expanding tabs to the
     /// next multiple of `tabstop` when set.
-    pub fn grapheme_display_width(
-        grapheme: &str,
-        col: usize,
-        tabstop: Option<u8>,
-    ) -> usize {
-        if let Some(tabstop) = tabstop {
-            if grapheme.as_bytes().first() == Some(&b'\t') {
-                let tabstop = tabstop as usize;
-                return tabstop - (col % tabstop);
-            }
+    pub fn grapheme_display_width(grapheme: &str, col: usize, tabstop: Option<u8>) -> usize {
+        if let Some(tabstop) = tabstop
+            && grapheme.as_bytes().first() == Some(&b'\t')
+        {
+            let tabstop = tabstop as usize;
+            return tabstop - (col % tabstop);
         }
-        tuie::terminal_grapheme_width(grapheme) as usize
+        tuie::grapheme_width(grapheme)
     }
 
     /// Returns an iterator over the visual lines of `text` bounded by `max_size` cells.

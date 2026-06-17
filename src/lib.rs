@@ -5,29 +5,34 @@ extern crate self as tuie;
 #[doc(hidden)]
 pub use paste;
 
-pub mod ansi;
+#[allow(dead_code, unused_imports)]
+pub(crate) mod ansi;
 pub mod editor;
+pub mod emulator;
 #[cfg(feature = "gui")]
 pub mod gui;
 pub mod input;
 pub mod render;
 pub mod runtime;
-pub mod test;
 pub mod theme;
 pub mod util;
 pub mod widget;
+
+#[cfg(test)]
+mod tests;
 
 #[doc(hidden)]
 pub use runtime::{
     config, dirty_layout, dirty_paint,
     disable, emit, enable, ensure_focused, focus_widget, get_focus_chain,
-    get_focused_measure, get_focused_widget, get_terminal_info, focus_next_tab_order, focus_next_directionally,
+    get_focused_measure, get_focused_widget, get_runtime_info, focus_next_tab_order, focus_next_directionally,
+    in_focus_chain, is_focused, is_gui,
     on_quit, quit, reveal, schedule, send, set_output, set_spawner, spawn, start_tui,
     spawn_stream, suspend,
 };
 pub use runtime::clipboard;
 #[doc(hidden)]
-pub use render::{terminal_display_width, terminal_grapheme_width};
+pub use render::{display_width, grapheme_width};
 #[doc(hidden)]
 pub use runtime::popup::{close_popup, dismiss_popup, open_popup};
 
@@ -66,17 +71,12 @@ macro_rules! config_module {
                 CONFIG.with(|c| c.get())
             }
 
-            /// Replaces the configuration.
-            pub fn set(cfg: super::$cfg) {
-                CONFIG.with(|c| c.set(cfg));
-                $crate::dirty_layout();
-            }
-
             /// Applies `f` to the configuration in place.
             pub fn update(f: impl FnOnce(&mut super::$cfg)) {
                 let mut cfg = get();
                 f(&mut cfg);
-                set(cfg);
+                CONFIG.with(|c| c.set(cfg));
+                $crate::dirty_layout();
             }
         }
     };
@@ -98,6 +98,7 @@ pub mod prelude {
 
     pub use super::widget::align::Align;
     pub use super::widget::align::FlexAlign;
+    pub use super::widget::align::FlexWrap;
     pub use super::widget::align::Place;
     pub use super::render::border::Border;
     pub use super::render::border::BorderConfig;
@@ -109,7 +110,6 @@ pub mod prelude {
     pub use super::runtime::event::RuntimeEvent;
     pub use super::widget::events::ChangeEvent;
     pub use super::widget::events::ClickEvent;
-    pub use super::widget::events::ListRequestEvent;
     pub use super::widget::events::ScrollEvent;
     #[cfg(feature = "images")]
     pub use super::render::image::{ImageConfig, ImageProtocol, ImageSource, ImageSourceError};
@@ -120,14 +120,13 @@ pub mod prelude {
     pub use super::widget::Layer;
     pub use super::widget::widgets::grid::{Cell, CellMut, Grid, Track};
     pub use super::widget::widgets::list::List;
+    pub use super::widget::widgets::list::ListRequestEvent;
     pub use super::widget::widgets::pane::Pane;
     pub use super::widget::widgets::stack::Stack;
     pub use super::widget::widgets::split::Split;
     pub use super::widget::widgets::split::SplitPane;
     pub use super::widget::widgets::split::SplitPaneChild;
-    pub use super::widget::widgets::split::SplitPaneContent;
     pub use super::render::style::StyledStr;
-    pub use super::render::style::Span;
     pub use super::render::style::Style;
     pub use super::render::style::Stylize;
     pub use super::render::style::StyledString;
@@ -152,7 +151,7 @@ pub mod prelude {
     pub use super::widget::WidgetMethods;
     pub use super::widget::constrain_child;
     pub use super::widget::flow_child;
-    pub use super::widget::flow_child_measure;
+    pub use super::widget::measure_child;
     pub use super::widget::WidgetState;
     pub use super::widget::Revelation;
 
@@ -171,7 +170,7 @@ pub mod prelude {
 
     pub use super::runtime::FocusedMeasure;
     pub use super::runtime::TaskHandle;
-    pub use super::runtime::TerminalInfo;
+    pub use super::runtime::RuntimeInfo;
     pub use super::runtime::TuiConfig;
 
     pub use super::render::GridRenderer;

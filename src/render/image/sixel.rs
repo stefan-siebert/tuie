@@ -10,7 +10,7 @@ use super::source::{await_async_entry, prepare_async, SixelQuantized, SourceData
 use super::ImageSource;
 
 thread_local! {
-    static PAYLOAD_SCRATCH: RefCell<Vec<u8>> = RefCell::new(Vec::new());
+    static PAYLOAD_SCRATCH: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
 }
 
 struct SixelLayout {
@@ -32,7 +32,7 @@ fn layout(
     source_px: Vec2<u32>,
     fill: bool,
 ) -> Option<SixelLayout> {
-    let cell_px = crate::runtime::get_terminal_info()?.cell_px?;
+    let cell_px = crate::get_runtime_info().cell_size?;
     if placement_size.x == 0 || placement_size.y == 0 || cell_px.x == 0 || cell_px.y == 0 {
         return None;
     }
@@ -110,7 +110,7 @@ pub(crate) fn dispatch(
     let img_tl = ctx.anchor + Vec2::new(lay.cell_off.x as i32, lay.cell_off.y as i32);
     let img_br = img_tl + Vec2::new(lay.image_cells.x as i32, lay.image_cells.y as i32);
 
-    let clip_tl = Vec2::new(ctx.position.x as i32, ctx.position.y as i32);
+    let clip_tl = Vec2::new(ctx.pos.x as i32, ctx.pos.y as i32);
     let clip_br = clip_tl + Vec2::new(ctx.physical_size.x as i32, ctx.physical_size.y as i32);
 
     let vis_tl = Vec2::new(img_tl.x.max(clip_tl.x), img_tl.y.max(clip_tl.y));
@@ -175,8 +175,8 @@ pub(crate) fn dispatch(
     });
 
     let image_cell_rows = crop_h.div_ceil(cell_px.y as u32).min(vis_h) as u16;
-    let widget_vis_tl_x = (vis_tl.x - ctx.anchor.x).max(0) as i32;
-    let widget_vis_tl_y = (vis_tl.y - ctx.anchor.y).max(0) as i32;
+    let widget_vis_tl_x = (vis_tl.x - ctx.anchor.x).max(0);
+    let widget_vis_tl_y = (vis_tl.y - ctx.anchor.y).max(0);
     ctx.invalidate(
         Vec2::new(widget_vis_tl_x, widget_vis_tl_y),
         Vec2::new(vis_w as u16, image_cell_rows),

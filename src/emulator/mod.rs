@@ -1,17 +1,14 @@
-//! Test harness for driving widgets through the runtime.
-
-#[cfg(test)]
-mod tests;
+//! Terminal emulator for driving widgets through the runtime.
 
 use crate::prelude::*;
 
 /// Drives a widget tree through the runtime and captures the rendered output.
-pub struct TestTerminal(());
+pub struct Emulator(());
 
-impl TestTerminal {
-    /// Creates a [`TestTerminal`] with `root` rendered at `size`.
+impl Emulator {
+    /// Creates an [`Emulator`] with `root` rendered at `size`.
     pub fn new(root: &mut dyn Widget, size: Vec2<u16>) -> Self {
-        crate::runtime::test_init(size);
+        crate::runtime::init_emulator(size);
         let _ = crate::runtime::update(root, &[RuntimeEvent::Resize(size)]);
         Self(())
     }
@@ -21,14 +18,24 @@ impl TestTerminal {
         let _ = crate::runtime::update(root, events);
     }
 
+    /// Overrides the emulated [`RuntimeInfo`] capabilities, e.g. `cell_size` and `subcell_events`.
+    pub fn update_runtime_info(&mut self, f: impl FnOnce(&mut RuntimeInfo)) {
+        crate::runtime::update_runtime_info(f);
+    }
+
     /// Returns the most recently rendered frame as a [`StyledString`].
     pub fn get_snapshot(&self) -> StyledString {
-        crate::runtime::get_snapshot()
+        crate::runtime::get_emulator_snapshot()
+    }
+
+    /// Returns the terminal cursor from the most recently rendered frame.
+    pub fn get_cursor(&self) -> Option<(CursorShape, Vec2<i32>)> {
+        crate::runtime::get_emulator_cursor()
     }
 
     /// Returns the most recently rendered frame as plain text.
     pub fn get_snapshot_text(&self) -> String {
-        self.get_snapshot().text
+        self.get_snapshot().into_string()
     }
 
     /// Asserts the rendered frame matches `lines` row for row.

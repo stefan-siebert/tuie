@@ -34,7 +34,8 @@ impl std::fmt::Display for Modifier {
 /// Bitset of [`Modifier`] flags held simultaneously.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Modifiers {
-    /// Packed bits, one per [`Modifier`] variant.
+    /// Packed bits, one per [`Modifier`] variant. Public only for `chord!` pattern expansion.
+    #[doc(hidden)]
     pub modifiers: u8,
 }
 
@@ -60,6 +61,12 @@ impl std::fmt::Display for Modifiers {
             write!(f, "{modifier}")?;
         }
         Ok(())
+    }
+}
+
+impl Default for Modifiers {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

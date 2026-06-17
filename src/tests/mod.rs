@@ -4,6 +4,7 @@ mod ansi;
 mod border;
 mod chord;
 mod color;
+mod focus;
 mod grid;
 mod input;
 #[cfg(feature = "harmonious")]

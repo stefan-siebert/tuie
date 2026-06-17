@@ -9,49 +9,49 @@ pub(crate) fn on_input_shared<T: TextDocument>(
     text: &mut T,
     event: &InputEvent,
 ) -> bool {
-    let click = event.get_click_cycle(3);
+    let click = event.click_cycle(3);
     match &event.chord {
         chord!(LeftClick) if click == 1 => {
             let pos = if state.inclusive_selection {
-                event.mouse_pos
+                event.cell()
             } else {
                 ibeam_click_pos(event)
             };
             state.click(text, pos);
         }
-        chord!(LeftClick) if click == 2 => state.double_click(text, event.mouse_pos),
-        chord!(LeftClick) if click == 3 => state.triple_click(text, event.mouse_pos),
+        chord!(LeftClick) if click == 2 => state.double_click(text, event.cell()),
+        chord!(LeftClick) if click == 3 => state.triple_click(text, event.cell()),
         chord!(LeftDrag) if click == 1 => {
-            if !state.inclusive_selection && event.mouse_window_subpx.x >= 0 {
+            if !state.inclusive_selection && crate::get_runtime_info().subcell_events {
                 state.drag_ibeam(text, ibeam_click_pos(event));
             } else {
-                state.drag(text, event.mouse_pos);
+                state.drag(text, event.cell());
             }
         }
-        chord!(LeftDrag) if click == 2 => state.double_click_drag(text, event.mouse_pos),
-        chord!(LeftDrag) if click == 3 => state.triple_click_drag(text, event.mouse_pos),
+        chord!(LeftDrag) if click == 2 => state.double_click_drag(text, event.cell()),
+        chord!(LeftDrag) if click == 3 => state.triple_click_drag(text, event.cell()),
         chord!(Arrow(direction)) => state.move_cursor(text, *direction),
         chord!(Shift + Arrow(direction)) => state.extend_selection(text, *direction),
         chord!(Ctrl + Arrow(direction) | Alt + Arrow(direction)) => {
             match direction.axis() {
                 Axis2D::X => state.move_cursor_word(text, direction.screen_sign()),
-                Axis2D::Y => state.move_cursor_document_end(text, direction.screen_sign()),
+                Axis2D::Y => state.move_cursor_document_edge(text, direction.screen_sign()),
             }
         }
         chord!(Ctrl + Shift + Arrow(direction) | Alt + Shift + Arrow(direction)) => {
             match direction.axis() {
                 Axis2D::X => state.extend_selection_word(text, direction.screen_sign()),
-                Axis2D::Y => state.grow_extend_selection_document_end(text, direction.screen_sign()),
+                Axis2D::Y => state.grow_extend_selection_document_edge(text, direction.screen_sign()),
             }
         }
-        chord!(Home) => state.move_cursor_line_end(text, Sign::Negative),
-        chord!(End) => state.move_cursor_line_end(text, Sign::Positive),
-        chord!(Shift + Home) => state.extend_selection_line_end(text, Sign::Negative),
-        chord!(Shift + End) => state.extend_selection_line_end(text, Sign::Positive),
-        chord!(Ctrl + Home) => state.move_cursor_document_end(text, Sign::Negative),
-        chord!(Ctrl + End) => state.move_cursor_document_end(text, Sign::Positive),
-        chord!(Ctrl + Shift + Home) => state.extend_selection_document_end(text, Sign::Negative),
-        chord!(Ctrl + Shift + End) => state.extend_selection_document_end(text, Sign::Positive),
+        chord!(Home) => state.move_cursor_line_edge(text, Sign::Negative),
+        chord!(End) => state.move_cursor_line_edge(text, Sign::Positive),
+        chord!(Shift + Home) => state.extend_selection_line_edge(text, Sign::Negative),
+        chord!(Shift + End) => state.extend_selection_line_edge(text, Sign::Positive),
+        chord!(Ctrl + Home) => state.move_cursor_document_edge(text, Sign::Negative),
+        chord!(Ctrl + End) => state.move_cursor_document_edge(text, Sign::Positive),
+        chord!(Ctrl + Shift + Home) => state.extend_selection_document_edge(text, Sign::Negative),
+        chord!(Ctrl + Shift + End) => state.extend_selection_document_edge(text, Sign::Positive),
         chord!(Backspace) => state.delete_char(text, Sign::Negative),
         chord!(Delete) => state.delete_char(text, Sign::Positive),
         chord!(Ctrl + Backspace | Alt + Backspace) => state.delete_word(text, Sign::Negative),
@@ -97,25 +97,25 @@ impl<T: TextDocument + 'static> InputBindings<T> for DefaultBindings<T> {
             chord!(Ctrl + v) | chord!(Ctrl + y) => state.paste(text),
             chord!(Ctrl + t) => state.transpose_chars(text),
 
-            chord!(Ctrl + c) | chord!(Alt + w) => state.copy_selection(text),
+            chord!(Ctrl + c) | chord!(Alt + w) => state.copy(text),
             chord!(Ctrl + A) => state.select_all(text),
             chord!(Ctrl + f) => state.move_cursor(text, Direction2D::Right),
             chord!(Ctrl + b) => state.move_cursor(text, Direction2D::Left),
             chord!(Ctrl + n) => state.move_cursor(text, Direction2D::Down),
             chord!(Ctrl + p) => state.move_cursor(text, Direction2D::Up),
-            chord!(Ctrl + a) => state.move_cursor_line_end(text, Sign::Negative),
-            chord!(Ctrl + e) => state.move_cursor_line_end(text, Sign::Positive),
+            chord!(Ctrl + a) => state.move_cursor_line_edge(text, Sign::Negative),
+            chord!(Ctrl + e) => state.move_cursor_line_edge(text, Sign::Positive),
             chord!(Alt + f) => state.move_cursor_word(text, Sign::Positive),
             chord!(Alt + b) => state.move_cursor_word(text, Sign::Negative),
             chord!(Ctrl + d) => state.delete_char(text, Sign::Positive),
             chord!(Ctrl + h) => state.delete_char(text, Sign::Negative),
             chord!(Ctrl + w) => state.delete_word(text, Sign::Negative),
             chord!(Alt + d) => state.delete_word(text, Sign::Positive),
-            chord!(Ctrl + k) => state.delete_to_line_end(text, Sign::Positive),
-            chord!(Ctrl + u) => state.delete_to_line_end(text, Sign::Negative),
+            chord!(Ctrl + k) => state.delete_to_line_edge(text, Sign::Positive),
+            chord!(Ctrl + u) => state.delete_to_line_edge(text, Sign::Negative),
 
             _ => {
-                if !on_input_shared(state, text, &event) {
+                if !on_input_shared(state, text, event) {
                     return InputResult::Rejected;
                 }
             }

@@ -10,42 +10,42 @@ pub enum Color {
     /// Truecolor RGB triple.
     Rgb(u8, u8, u8),
     /// 256-color palette index.
-    Base256(u8),
+    Indexed(u8),
 }
 
 impl Color {
     /// ANSI palette index 0.
-    pub const BLACK: Color = Color::Base256(0);
+    pub const BLACK: Color = Color::Indexed(0);
     /// ANSI palette index 1.
-    pub const RED: Color = Color::Base256(1);
+    pub const RED: Color = Color::Indexed(1);
     /// ANSI palette index 2.
-    pub const GREEN: Color = Color::Base256(2);
+    pub const GREEN: Color = Color::Indexed(2);
     /// ANSI palette index 3.
-    pub const YELLOW: Color = Color::Base256(3);
+    pub const YELLOW: Color = Color::Indexed(3);
     /// ANSI palette index 4.
-    pub const BLUE: Color = Color::Base256(4);
+    pub const BLUE: Color = Color::Indexed(4);
     /// ANSI palette index 5.
-    pub const MAGENTA: Color = Color::Base256(5);
+    pub const MAGENTA: Color = Color::Indexed(5);
     /// ANSI palette index 6.
-    pub const CYAN: Color = Color::Base256(6);
+    pub const CYAN: Color = Color::Indexed(6);
     /// ANSI palette index 7.
-    pub const WHITE: Color = Color::Base256(7);
+    pub const WHITE: Color = Color::Indexed(7);
     /// ANSI palette index 8.
-    pub const BRIGHT_BLACK: Color = Color::Base256(8);
+    pub const BRIGHT_BLACK: Color = Color::Indexed(8);
     /// ANSI palette index 9.
-    pub const BRIGHT_RED: Color = Color::Base256(9);
+    pub const BRIGHT_RED: Color = Color::Indexed(9);
     /// ANSI palette index 10.
-    pub const BRIGHT_GREEN: Color = Color::Base256(10);
+    pub const BRIGHT_GREEN: Color = Color::Indexed(10);
     /// ANSI palette index 11.
-    pub const BRIGHT_YELLOW: Color = Color::Base256(11);
+    pub const BRIGHT_YELLOW: Color = Color::Indexed(11);
     /// ANSI palette index 12.
-    pub const BRIGHT_BLUE: Color = Color::Base256(12);
+    pub const BRIGHT_BLUE: Color = Color::Indexed(12);
     /// ANSI palette index 13.
-    pub const BRIGHT_MAGENTA: Color = Color::Base256(13);
+    pub const BRIGHT_MAGENTA: Color = Color::Indexed(13);
     /// ANSI palette index 14.
-    pub const BRIGHT_CYAN: Color = Color::Base256(14);
+    pub const BRIGHT_CYAN: Color = Color::Indexed(14);
     /// ANSI palette index 15.
-    pub const BRIGHT_WHITE: Color = Color::Base256(15);
+    pub const BRIGHT_WHITE: Color = Color::Indexed(15);
 
     /// Returns true for [`Color::Foreground`] or [`Color::Background`].
     pub const fn is_default(&self) -> bool {
@@ -53,48 +53,17 @@ impl Color {
     }
 
     /// Returns a 256-color palette entry from the 6x6x6 cube. Values are clamped to 0..=5.
-    pub const fn color256(r: u8, g: u8, b: u8) -> Color {
+    pub const fn cube256(r: u8, g: u8, b: u8) -> Color {
         let r = if r > 5 { 5 } else { r };
         let g = if g > 5 { 5 } else { g };
         let b = if b > 5 { 5 } else { b };
-        Color::Base256(16 + r * 36 + g * 6 + b)
+        Color::Indexed(16 + r * 36 + g * 6 + b)
     }
 
     /// Returns a 256-color palette entry from the 24-step greyscale ramp. `shade` is clamped to 0..=23.
     pub const fn grey256(shade: u8) -> Color {
         let shade = if shade > 23 { 23 } else { shade };
-        Color::Base256(232 + shade)
-    }
-
-    /// Returns the color packed into a 26-bit representation with a 2-bit tag in the high bits.
-    pub const fn into_bits(&self) -> u32 {
-        match *self {
-            Color::Foreground => 0,
-            Color::Base256(v) => (1u32 << 24) | (v as u32),
-            Color::Rgb(r, g, b) => {
-                (2u32 << 24)
-                    | ((r as u32) << 16)
-                    | ((g as u32) << 8)
-                    | (b as u32)
-            }
-            Color::Background => 3u32 << 24,
-        }
-    }
-
-    /// Returns the color decoded from the packed representation produced by [`Color::into_bits`].
-    pub const fn from_bits(value: u32) -> Self {
-        let v = value & 0x03FF_FFFF;
-        match (v >> 24) & 0b11 {
-            0 => Color::Foreground,
-            1 => Color::Base256((v & 0xFF) as u8),
-            2 => Color::Rgb(
-                ((v >> 16) & 0xFF) as u8,
-                ((v >> 8) & 0xFF) as u8,
-                (v & 0xFF) as u8,
-            ),
-            3 => Color::Background,
-            _ => unreachable!(),
-        }
+        Color::Indexed(232 + shade)
     }
 }
 
@@ -121,14 +90,15 @@ impl std::str::FromStr for Color {
             .or_else(|| s.strip_prefix("0X"))
             .map(|stripped| (stripped, true))
             .unwrap_or((s, false));
-        if !had_prefix && s.len() <= 3 {
-            if let Ok(n) = s.parse::<u8>() {
-                return Ok(Color::Base256(n));
-            }
+        if !had_prefix
+            && s.len() <= 3
+            && let Ok(n) = s.parse::<u8>()
+        {
+            return Ok(Color::Indexed(n));
         }
         let hex_byte = |range: std::ops::Range<usize>| u8::from_str_radix(&hex[range], 16).ok();
         let parsed = match hex.len() {
-            2 if had_prefix => hex_byte(0..2).map(Color::Base256),
+            2 if had_prefix => hex_byte(0..2).map(Color::Indexed),
             3 if had_prefix => match (hex_byte(0..1), hex_byte(1..2), hex_byte(2..3)) {
                 (Some(r), Some(g), Some(b)) => Some(Color::Rgb(r * 0x11, g * 0x11, b * 0x11)),
                 _ => None,
@@ -172,7 +142,7 @@ impl std::fmt::Display for Color {
             Color::Foreground => write!(f, "Foreground"),
             Color::Background => write!(f, "Background"),
             Color::Rgb(r, g, b) => write!(f, "Rgb({}, {}, {})", r, g, b),
-            Color::Base256(idx) => write!(f, "Base256({})", idx),
+            Color::Indexed(idx) => write!(f, "Indexed({})", idx),
         }
     }
 }

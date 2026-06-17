@@ -145,7 +145,7 @@ impl TerminalQuery for QueryColor {
     fn query_bytes(&self) -> Vec<u8> {
         let n = self.0.get_osc_number();
         match self.0 {
-            ColorType::Palette(index) => format!("\x1b]{n};{index};?\x1b\\").into_bytes(),
+            ColorType::Indexed(index) => format!("\x1b]{n};{index};?\x1b\\").into_bytes(),
             _ => format!("\x1b]{n};?\x1b\\").into_bytes(),
         }
     }

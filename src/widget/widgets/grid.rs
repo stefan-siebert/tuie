@@ -8,14 +8,15 @@ use sign::Directional;
 
 /// Row or column track sizing specification.
 #[derive(Clone, Copy, Default)]
+#[non_exhaustive]
 pub struct Track {
     /// Minimum size in cells.
     pub min: Option<u16>,
     /// Preferred size in cells.
-    pub pref: Option<u16>,
+    pub preferred: Option<u16>,
     /// Maximum size in cells.
     pub max: Option<u16>,
-    /// Grow weight.
+    /// Flex weight.
     pub flex: u8,
     /// Top edge for rows, left edge for cols.
     pub start: Option<&'static Border>,
@@ -30,17 +31,17 @@ pub struct Track {
 impl Track {
     /// Returns a track sized from its children.
     pub const fn auto() -> Self {
-        Self { min: None, pref: None, max: None, flex: 0, start: None, end: None, style: Style::new(), border_style: Style::new() }
+        Self { min: None, preferred: None, max: None, flex: 0, start: None, end: None, style: Style::new(), border_style: Style::new() }
     }
 
     /// Returns a fixed-size track of `n` cells.
     pub const fn fixed(n: u16) -> Self {
-        Self { min: Some(n), pref: Some(n), max: Some(n), flex: 0, start: None, end: None, style: Style::new(), border_style: Style::new() }
+        Self { min: Some(n), preferred: Some(n), max: Some(n), flex: 0, start: None, end: None, style: Style::new(), border_style: Style::new() }
     }
 
     /// Returns a child-sized track with flex `weight`.
-    pub const fn grow(weight: u8) -> Self {
-        Self { min: None, pref: None, max: None, flex: weight, start: None, end: None, style: Style::new(), border_style: Style::new() }
+    pub const fn flex(weight: u8) -> Self {
+        Self { min: None, preferred: None, max: None, flex: weight, start: None, end: None, style: Style::new(), border_style: Style::new() }
     }
 
     /// Sets the minimum size in cells.
@@ -50,20 +51,14 @@ impl Track {
     }
 
     /// Sets the preferred size in cells.
-    pub const fn pref(mut self, n: u16) -> Self {
-        self.pref = Some(n);
+    pub const fn preferred(mut self, n: u16) -> Self {
+        self.preferred = Some(n);
         self
     }
 
     /// Sets the maximum size in cells.
     pub const fn max(mut self, n: u16) -> Self {
         self.max = Some(n);
-        self
-    }
-
-    /// Sets the grow weight.
-    pub const fn flex(mut self, w: u8) -> Self {
-        self.flex = w;
         self
     }
 
@@ -81,6 +76,7 @@ impl Track {
 }
 
 /// A single widget placement inside a [`Grid`] at `(row, col)` with optional span and per-cell overrides.
+#[non_exhaustive]
 pub struct Cell {
     /// The child widget.
     pub widget: Box<dyn Widget>,
@@ -265,92 +261,92 @@ impl Grid {
 
     fn resolve_h_edge(&self, r: usize, c: usize) -> Option<&'static Border> {
         let n_rows = self.rows.len();
-        if r > 0 && r < n_rows {
-            if let (Some(a), Some(b)) = (self.cell_covering(r - 1, c), self.cell_covering(r, c)) {
-                if std::ptr::eq(a, b) {
-                    return None;
-                }
-            }
+        if r > 0
+            && r < n_rows
+            && let (Some(a), Some(b)) = (self.cell_covering(r - 1, c), self.cell_covering(r, c))
+            && std::ptr::eq(a, b)
+        {
+            return None;
         }
-        if r > 0 {
-            if let Some(cell) = self.cell_covering(r - 1, c) {
-                if let Some(b) = cell.border {
-                    return Some(b);
-                }
-            }
+        if r > 0
+            && let Some(cell) = self.cell_covering(r - 1, c)
+            && let Some(b) = cell.border
+        {
+            return Some(b);
         }
-        if r < n_rows {
-            if let Some(cell) = self.cell_covering(r, c) {
-                if let Some(b) = cell.border {
-                    return Some(b);
-                }
-            }
+        if r < n_rows
+            && let Some(cell) = self.cell_covering(r, c)
+            && let Some(b) = cell.border
+        {
+            return Some(b);
         }
-        if r > 0 {
-            if let Some(b) = self.rows[r - 1].end {
-                return Some(b);
-            }
+        if r > 0
+            && let Some(b) = self.rows[r - 1].end
+        {
+            return Some(b);
         }
-        if r < n_rows {
-            if let Some(b) = self.rows[r].start {
-                return Some(b);
-            }
+        if r < n_rows
+            && let Some(b) = self.rows[r].start
+        {
+            return Some(b);
         }
-        if r > 0 && r < n_rows {
-            if let Some(b) = self.row_borders {
-                return Some(b);
-            }
+        if r > 0
+            && r < n_rows
+            && let Some(b) = self.row_borders
+        {
+            return Some(b);
         }
-        if (r == 0 || r == n_rows) && n_rows > 0 {
-            if let Some(b) = self.border {
-                return Some(b);
-            }
+        if (r == 0 || r == n_rows)
+            && n_rows > 0
+            && let Some(b) = self.border
+        {
+            return Some(b);
         }
         None
     }
 
     fn resolve_v_edge(&self, r: usize, c: usize) -> Option<&'static Border> {
         let n_cols = self.columns.len();
-        if c > 0 && c < n_cols {
-            if let (Some(a), Some(b)) = (self.cell_covering(r, c - 1), self.cell_covering(r, c)) {
-                if std::ptr::eq(a, b) {
-                    return None;
-                }
-            }
+        if c > 0
+            && c < n_cols
+            && let (Some(a), Some(b)) = (self.cell_covering(r, c - 1), self.cell_covering(r, c))
+            && std::ptr::eq(a, b)
+        {
+            return None;
         }
-        if c > 0 {
-            if let Some(cell) = self.cell_covering(r, c - 1) {
-                if let Some(b) = cell.border {
-                    return Some(b);
-                }
-            }
+        if c > 0
+            && let Some(cell) = self.cell_covering(r, c - 1)
+            && let Some(b) = cell.border
+        {
+            return Some(b);
         }
-        if c < n_cols {
-            if let Some(cell) = self.cell_covering(r, c) {
-                if let Some(b) = cell.border {
-                    return Some(b);
-                }
-            }
+        if c < n_cols
+            && let Some(cell) = self.cell_covering(r, c)
+            && let Some(b) = cell.border
+        {
+            return Some(b);
         }
-        if c > 0 {
-            if let Some(b) = self.columns[c - 1].end {
-                return Some(b);
-            }
+        if c > 0
+            && let Some(b) = self.columns[c - 1].end
+        {
+            return Some(b);
         }
-        if c < n_cols {
-            if let Some(b) = self.columns[c].start {
-                return Some(b);
-            }
+        if c < n_cols
+            && let Some(b) = self.columns[c].start
+        {
+            return Some(b);
         }
-        if c > 0 && c < n_cols {
-            if let Some(b) = self.col_borders {
-                return Some(b);
-            }
+        if c > 0
+            && c < n_cols
+            && let Some(b) = self.col_borders
+        {
+            return Some(b);
         }
-        if (c == 0 || c == n_cols) && n_cols > 0 {
-            if let Some(b) = self.border {
-                return Some(b);
-            }
+        if (c == 0 || c == n_cols)
+            && n_cols > 0
+            && let Some(b) = self.border
+        {
+            return Some(b);
         }
         None
     }
@@ -487,7 +483,7 @@ impl Grid {
             }
         }
         for (i, t) in self.columns.iter().enumerate() {
-            if let Some(p) = t.pref {
+            if let Some(p) = t.preferred {
                 col_pref[i] = p;
             }
             col_pref[i] = col_pref[i].max(col_min[i]);
@@ -511,7 +507,7 @@ impl Grid {
             }
         }
         for (i, t) in self.rows.iter().enumerate() {
-            if let Some(p) = t.pref {
+            if let Some(p) = t.preferred {
                 row_pref[i] = p;
             }
             row_pref[i] = row_pref[i].max(row_min[i]);
@@ -578,7 +574,7 @@ impl Grid {
             }
             let pad = self.cell_pad(cell).get_total();
             let child_w = w.saturating_sub(pad.x as u32).min(u16::MAX as u32) as u16;
-            let measured = flow_child_measure(&*cell.widget, Vec2::new(child_w, u16::MAX));
+            let measured = measure_child(&*cell.widget, Vec2::new(child_w, u16::MAX));
             let cmin_y = cell.widget.get_layout().constraints.min_size.y as u32;
             let need = (measured.y as u32).max(cmin_y);
             let rs = (cell.row_span.max(1) as usize).min(n_rows - r0);
@@ -651,7 +647,7 @@ impl Grid {
                     (pinned, pinned, pinned, 0)
                 }
                 None => {
-                    let pref = track.pref.unwrap_or(row_min[i]).max(row_min[i]).min(track_max);
+                    let pref = track.preferred.unwrap_or(row_min[i]).max(row_min[i]).min(track_max);
                     (pref, row_min[i], track_max, track.flex)
                 }
             };
@@ -704,7 +700,7 @@ impl Grid {
                         slack * iu / (n as u32 - 1) - slack * (iu - 1) / (n as u32 - 1)
                     }
                 }
-                Place::Middle if i == 0 => slack / 2,
+                Place::Center if i == 0 => slack / 2,
                 Place::End if i == 0 => slack,
                 _ => 0,
             };
@@ -778,14 +774,10 @@ impl Grid {
         if boundary == 0 || boundary >= self.rows.len() {
             return None;
         }
-        let start = self.state.row_off[boundary - 1] as i32
-            + self.state.rows[boundary - 1].target as i32;
+        let start =
+            self.state.row_off[boundary - 1] as i32 + self.state.rows[boundary - 1].target as i32;
         let end = self.state.row_off[boundary] as i32;
-        if end > start {
-            Some(start..end)
-        } else {
-            None
-        }
+        if end > start { Some(start..end) } else { None }
     }
 
     fn find_divider_at(&self, pos: Vec2<i32>) -> Option<(Axis2D, usize, i32)> {
@@ -795,21 +787,21 @@ impl Grid {
         let content_w = self.state.col_off.get(n_cols).copied().unwrap_or(0) as i32;
         if self.resizable_cols && (0..content_h).contains(&pos.y) {
             for b in 1..n_cols {
-                if let Some(r) = self.col_gutter_x(b) {
-                    if r.contains(&pos.x) {
-                        let center = (r.start + r.end) / 2;
-                        return Some((Axis2D::X, b, center));
-                    }
+                if let Some(r) = self.col_gutter_x(b)
+                    && r.contains(&pos.x)
+                {
+                    let center = (r.start + r.end) / 2;
+                    return Some((Axis2D::X, b, center));
                 }
             }
         }
         if self.resizable_rows && (0..content_w).contains(&pos.x) {
             for b in 1..n_rows {
-                if let Some(r) = self.row_gutter_y(b) {
-                    if r.contains(&pos.y) {
-                        let center = (r.start + r.end) / 2;
-                        return Some((Axis2D::Y, b, center));
-                    }
+                if let Some(r) = self.row_gutter_y(b)
+                    && r.contains(&pos.y)
+                {
+                    let center = (r.start + r.end) / 2;
+                    return Some((Axis2D::Y, b, center));
                 }
             }
         }
@@ -996,8 +988,8 @@ impl Grid {
         }
         h_div_y.push(self.state.row_off[n_rows]);
 
-        for r in 0..=n_rows {
-            let y = h_div_y[r] as i32;
+        for (r, &y_raw) in h_div_y.iter().enumerate() {
+            let y = y_raw as i32;
             for c in 0..n_cols {
                 if let Some(b) = self.resolve_h_edge(r, c) {
                     let mut s = base;
@@ -1020,8 +1012,8 @@ impl Grid {
             }
         }
 
-        for c in 0..=n_cols {
-            let x = v_div_x[c] as i32;
+        for (c, &x_raw) in v_div_x.iter().enumerate() {
+            let x = x_raw as i32;
             for r in 0..n_rows {
                 if let Some(b) = self.resolve_v_edge(r, c) {
                     let mut s = base;
@@ -1045,8 +1037,8 @@ impl Grid {
         }
 
         ctx.set_style(base);
-        for r in 0..=n_rows {
-            for c in 0..=n_cols {
+        for (r, &y_raw) in h_div_y.iter().enumerate() {
+            for (c, &x_raw) in v_div_x.iter().enumerate() {
                 let l = if c > 0 { self.resolve_h_edge(r, c - 1) } else { None };
                 let rt = if c < n_cols { self.resolve_h_edge(r, c) } else { None };
                 let u = if r > 0 { self.resolve_v_edge(r - 1, c) } else { None };
@@ -1076,7 +1068,7 @@ impl Grid {
                     (false, true) => u.or(d).map(|b| b.get_edge(Axis2D::X)),
                 };
                 if let Some(g) = glyph {
-                    ctx.move_to(Vec2::new(v_div_x[c] as i32, h_div_y[r] as i32));
+                    ctx.move_to(Vec2::new(x_raw as i32, y_raw as i32));
                     write!(ctx, "{}", g);
                 }
             }
@@ -1153,7 +1145,7 @@ impl Widget for Grid {
             let actual = if mode_x == FlexAlign::Stretch && mode_y == FlexAlign::Stretch {
                 cell_size
             } else {
-                let measured = flow_child_measure(&*cell.widget, cell_size);
+                let measured = measure_child(&*cell.widget, cell_size);
                 Vec2::new(
                     if mode_x == FlexAlign::Stretch { cell_size.x } else { measured.x.min(cell_size.x) },
                     if mode_y == FlexAlign::Stretch { cell_size.y } else { measured.y.min(cell_size.y) },
@@ -1174,7 +1166,7 @@ impl Widget for Grid {
                 cell_size.x.saturating_sub(pad.x),
                 cell_size.y.saturating_sub(pad.y),
             );
-            flow_child_measure(&*cell.widget, child_size);
+            measure_child(&*cell.widget, child_size);
         }
         Vec2::new(
             Self::natural_min_extent_sum(&local.cols, self.col_chrome_total()),
@@ -1220,12 +1212,12 @@ impl Widget for Grid {
             let intra = Vec2::new(
                 match mode_x {
                     FlexAlign::Stretch | FlexAlign::Start => 0,
-                    FlexAlign::Middle => slack.x / 2,
+                    FlexAlign::Center => slack.x / 2,
                     FlexAlign::End => slack.x,
                 },
                 match mode_y {
                     FlexAlign::Stretch | FlexAlign::Start => 0,
-                    FlexAlign::Middle => slack.y / 2,
+                    FlexAlign::Center => slack.y / 2,
                     FlexAlign::End => slack.y,
                 },
             );
@@ -1272,7 +1264,7 @@ impl Widget for Grid {
         let Some(event) = queue.peek() else { return InputResult::Rejected; };
         match &event.chord {
             chord!(LeftClick) => {
-                let pos = event.mouse_pos;
+                let pos = event.cell();
                 if let Some((axis, boundary, center)) = self.find_divider_at(pos) {
                     let grab_offset = pos[axis] - center;
                     queue.next();
@@ -1284,7 +1276,7 @@ impl Widget for Grid {
             chord!(LeftDrag) => {
                 let Some(drag) = self.drag.take() else { return InputResult::Rejected; };
                 queue.next();
-                let mouse = event.mouse_pos;
+                let mouse = event.cell();
                 if let Some(center) = self.divider_center(drag.axis, drag.boundary) {
                     let delta = mouse[drag.axis] - center - drag.grab_offset;
                     self.apply_drag(drag.axis, drag.boundary, delta);
@@ -1331,7 +1323,7 @@ impl Widget for Grid {
     ) -> Option<WidgetId> {
         for cell in self.cells.iter() {
             let grandchild = cell.widget
-                .find_descendant(predicate, path.as_mut().map(|p| &mut **p));
+                .find_descendant(predicate, path.as_deref_mut());
             if grandchild.is_some() {
                 if let Some(p) = &mut path {
                     p.push(cell.widget.get_id());
@@ -1358,7 +1350,7 @@ impl Widget for Grid {
                 continue;
             }
             let descendant = cell.widget
-                .descendant_at_pos(pos, path.as_mut().map(|p| &mut **p));
+                .descendant_at_pos(pos, path.as_deref_mut());
             if let Some(p) = &mut path {
                 p.push(cell.widget.get_id());
             }
@@ -1378,7 +1370,7 @@ impl Widget for Grid {
                 continue;
             }
             let grandchild = cell.widget
-                .find_descendant_at_pos(pos, predicate, path.as_mut().map(|p| &mut **p));
+                .find_descendant_at_pos(pos, predicate, path.as_deref_mut());
             if grandchild.is_some() {
                 if let Some(p) = &mut path {
                     p.push(cell.widget.get_id());
@@ -1421,9 +1413,9 @@ impl Grid {
         })
     }
 
-    /// Builder form of [`Grid::set_columns`] taking an array.
-    pub fn columns<const N: usize>(mut self: Box<Self>, tracks: [Track; N]) -> Box<Self> {
-        self.set_columns(tracks.to_vec());
+    /// Builder form of [`Grid::set_cols`] taking an array.
+    pub fn cols<const N: usize>(mut self: Box<Self>, tracks: [Track; N]) -> Box<Self> {
+        self.set_cols(tracks.to_vec());
         self
     }
 
@@ -1434,7 +1426,7 @@ impl Grid {
     }
 
     /// Replaces the column track template, dropping any cells outside the new range.
-    pub fn set_columns(&mut self, tracks: Vec<Track>) {
+    pub fn set_cols(&mut self, tracks: Vec<Track>) {
         let n = tracks.len() as u16;
         self.cells.retain(|c| c.col < n);
         self.columns = tracks;
@@ -1835,12 +1827,12 @@ impl Grid {
 
     crate::field! {
         /// Whether columns can be resized by dragging their gutters.
-        resizable_cols: bool
+        resizable_cols as has_resizable_cols: bool
     }
 
     crate::field! {
         /// Whether rows can be resized by dragging their gutters.
-        resizable_rows: bool
+        resizable_rows as has_resizable_rows: bool
     }
 
     /// Builder form that enables drag-resize on both axes.
@@ -1902,4 +1894,3 @@ impl Grid {
         self.row_drag_size.get(row as usize).copied().flatten()
     }
 }
-

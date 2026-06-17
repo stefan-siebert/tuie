@@ -103,7 +103,7 @@ pub(crate) fn build_instance_and_adapter() -> std::io::Result<(wgpu::Instance, w
 }
 
 fn io_err<E: std::fmt::Display>(e: E) -> std::io::Error {
-    std::io::Error::new(std::io::ErrorKind::Other, e.to_string())
+    std::io::Error::other(e.to_string())
 }
 
 #[cfg(target_os = "macos")]
@@ -123,7 +123,7 @@ unsafe impl objc2::RefEncode for CGColor {
 
 #[cfg(target_os = "macos")]
 #[link(name = "CoreGraphics", kind = "framework")]
-extern "C" {
+unsafe extern "C" {
     static kCGColorSpaceSRGB: *const std::ffi::c_void;
     fn CGColorSpaceCreateWithName(name: *const std::ffi::c_void) -> *mut std::ffi::c_void;
     fn CGColorCreate(space: *mut std::ffi::c_void, components: *const f64) -> *mut CGColor;
@@ -162,7 +162,7 @@ fn configure_metal_layer(window: &Window) -> Option<MetalLayer> {
     use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
     #[link(name = "QuartzCore", kind = "framework")]
-    extern "C" {
+    unsafe extern "C" {
         static kCAGravityBottomLeft: *const AnyObject;
     }
 

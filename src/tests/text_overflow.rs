@@ -277,7 +277,7 @@ fn middle_align_truncate_keeps_middle_slice() {
         TextOverflow::TRUNCATE,
         "abcdefghij",
         Vec2::new(4, usize::MAX),
-        Align::Middle,
+        Align::Center,
         None,
     );
     assert_eq!(lines.len(), 1);

@@ -7,8 +7,8 @@ use axis2d::Axis2D;
 pub enum Align {
     /// Aligns to the start of the axis.
     Start,
-    /// Aligns to the middle of the axis.
-    Middle,
+    /// Aligns to the center of the axis.
+    Center,
     /// Aligns to the end of the axis.
     End,
 }
@@ -19,7 +19,7 @@ impl Align {
         match self {
             Self::Start => Self::End,
             Self::End => Self::Start,
-            Self::Middle => Self::Middle,
+            Self::Center => Self::Center,
         }
     }
 }
@@ -28,7 +28,7 @@ impl std::fmt::Display for Align {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Start => write!(f, "Start"),
-            Self::Middle => write!(f, "Middle"),
+            Self::Center => write!(f, "Center"),
             Self::End => write!(f, "End"),
         }
     }
@@ -39,8 +39,8 @@ impl std::fmt::Display for Align {
 pub enum FlexAlign {
     /// Aligns the item to the start of the axis.
     Start,
-    /// Aligns the item to the middle of the axis.
-    Middle,
+    /// Aligns the item to the center of the axis.
+    Center,
     /// Aligns the item to the end of the axis.
     End,
     /// Stretches the item to fill the axis.
@@ -51,7 +51,7 @@ impl std::fmt::Display for FlexAlign {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Start => write!(f, "Start"),
-            Self::Middle => write!(f, "Middle"),
+            Self::Center => write!(f, "Center"),
             Self::End => write!(f, "End"),
             Self::Stretch => write!(f, "Stretch"),
         }
@@ -62,8 +62,27 @@ impl From<Align> for FlexAlign {
     fn from(a: Align) -> Self {
         match a {
             Align::Start => FlexAlign::Start,
-            Align::Middle => FlexAlign::Middle,
+            Align::Center => FlexAlign::Center,
             Align::End => FlexAlign::End,
+        }
+    }
+}
+
+/// How items overflow onto additional lines along the main axis.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum FlexWrap {
+    /// Packs as many items as fit on each line before starting the next.
+    #[default]
+    Greedy,
+    /// Distributes items across lines so each holds a similar amount.
+    Balanced,
+}
+
+impl std::fmt::Display for FlexWrap {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Greedy => write!(f, "Greedy"),
+            Self::Balanced => write!(f, "Balanced"),
         }
     }
 }
@@ -71,11 +90,12 @@ impl From<Align> for FlexAlign {
 /// Parent-side positioning and slack distribution along an axis.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
+#[non_exhaustive]
 pub enum Place {
     /// Pack items at the start of the axis.
     Start = 0,
-    /// Pack items at the middle of the axis.
-    Middle = 1,
+    /// Pack items at the center of the axis.
+    Center = 1,
     /// Pack items at the end of the axis.
     End = 2,
     /// Stretch each item to fill the axis.
@@ -90,7 +110,7 @@ impl std::fmt::Display for Place {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Start => write!(f, "Start"),
-            Self::Middle => write!(f, "Middle"),
+            Self::Center => write!(f, "Center"),
             Self::End => write!(f, "End"),
             Self::Stretch => write!(f, "Stretch"),
             Self::Evenly => write!(f, "Evenly"),
@@ -117,7 +137,7 @@ impl TryFrom<Place> for FlexAlign {
     fn try_from(p: Place) -> Result<Self, Self::Error> {
         match p {
             Place::Start => Ok(FlexAlign::Start),
-            Place::Middle => Ok(FlexAlign::Middle),
+            Place::Center => Ok(FlexAlign::Center),
             Place::End => Ok(FlexAlign::End),
             Place::Stretch => Ok(FlexAlign::Stretch),
             Place::Evenly | Place::Apart => Err(AlignConversionError),
@@ -131,7 +151,7 @@ impl TryFrom<FlexAlign> for Align {
     fn try_from(f: FlexAlign) -> Result<Self, Self::Error> {
         match f {
             FlexAlign::Start => Ok(Align::Start),
-            FlexAlign::Middle => Ok(Align::Middle),
+            FlexAlign::Center => Ok(Align::Center),
             FlexAlign::End => Ok(Align::End),
             FlexAlign::Stretch => Err(AlignConversionError),
         }
@@ -144,7 +164,7 @@ impl TryFrom<Place> for Align {
     fn try_from(p: Place) -> Result<Self, Self::Error> {
         match p {
             Place::Start => Ok(Align::Start),
-            Place::Middle => Ok(Align::Middle),
+            Place::Center => Ok(Align::Center),
             Place::End => Ok(Align::End),
             Place::Stretch | Place::Evenly | Place::Apart => Err(AlignConversionError),
         }
@@ -155,7 +175,7 @@ impl From<FlexAlign> for Place {
     fn from(f: FlexAlign) -> Self {
         match f {
             FlexAlign::Start => Place::Start,
-            FlexAlign::Middle => Place::Middle,
+            FlexAlign::Center => Place::Center,
             FlexAlign::End => Place::End,
             FlexAlign::Stretch => Place::Stretch,
         }
@@ -166,7 +186,7 @@ impl From<Align> for Place {
     fn from(a: Align) -> Self {
         match a {
             Align::Start => Place::Start,
-            Align::Middle => Place::Middle,
+            Align::Center => Place::Center,
             Align::End => Place::End,
         }
     }
@@ -187,7 +207,7 @@ impl AlignSpec {
     const fn place_from_bits(b: u8) -> Place {
         match b {
             0 => Place::Start,
-            1 => Place::Middle,
+            1 => Place::Center,
             2 => Place::End,
             3 => Place::Stretch,
             4 => Place::Evenly,
@@ -239,7 +259,7 @@ impl AlignOverride {
         match b {
             0 => None,
             1 => Some(FlexAlign::Start),
-            2 => Some(FlexAlign::Middle),
+            2 => Some(FlexAlign::Center),
             3 => Some(FlexAlign::End),
             4 => Some(FlexAlign::Stretch),
             _ => None,
@@ -250,7 +270,7 @@ impl AlignOverride {
         match m {
             None => 0,
             Some(FlexAlign::Start) => 1,
-            Some(FlexAlign::Middle) => 2,
+            Some(FlexAlign::Center) => 2,
             Some(FlexAlign::End) => 3,
             Some(FlexAlign::Stretch) => 4,
         }

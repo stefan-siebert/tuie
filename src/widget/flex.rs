@@ -46,21 +46,8 @@ impl FlexItem {
     }
 }
 
-/// Access to a [`FlexItem`] embedded in a wrapper type.
-pub trait AsFlexItem {
-    /// Returns a shared reference to the embedded [`FlexItem`].
-    fn flex_item(&self) -> &FlexItem;
-    /// Returns a mutable reference to the embedded [`FlexItem`].
-    fn flex_item_mut(&mut self) -> &mut FlexItem;
-}
-
-impl AsFlexItem for FlexItem {
-    fn flex_item(&self) -> &FlexItem { self }
-    fn flex_item_mut(&mut self) -> &mut FlexItem { self }
-}
-
 /// Resolves main-axis sizes for a slice of flex items.
-pub fn resolve<T: AsFlexItem>(items: &mut [T], container_main: u16, gap_total: u32) {
+pub fn resolve(items: &mut [FlexItem], container_main: u16, gap_total: u32) {
     let n = items.len();
     if n == 0 {
         return;
@@ -68,13 +55,11 @@ pub fn resolve<T: AsFlexItem>(items: &mut [T], container_main: u16, gap_total: u
 
     let mut total_hyp: u32 = 0;
     for it in items.iter() {
-        let it = it.flex_item();
         total_hyp = total_hyp.saturating_add(it.basis.clamp(it.min, it.max) as u32);
     }
     let grow = total_hyp.saturating_add(gap_total) < container_main as u32;
 
     for it in items.iter_mut() {
-        let it = it.flex_item_mut();
         let hypothetical = it.basis.clamp(it.min, it.max);
         let freeze_initial = if grow {
             it.grow == 0 || it.basis > hypothetical
@@ -96,7 +81,6 @@ pub fn resolve<T: AsFlexItem>(items: &mut [T], container_main: u16, gap_total: u
         let mut total_weight: i64 = 0;
         let mut any_open = false;
         for it in items.iter() {
-            let it = it.flex_item();
             if it.flex.is_locked() {
                 locked_total += it.target as i64;
             } else {
@@ -123,7 +107,6 @@ pub fn resolve<T: AsFlexItem>(items: &mut [T], container_main: u16, gap_total: u
 
         if total_weight <= 0 || amount <= 0 {
             for it in items.iter_mut() {
-                let it = it.flex_item_mut();
                 if !it.flex.is_locked() {
                     it.target = it.basis;
                     it.flex = Flexibility::RIGID;
@@ -136,7 +119,6 @@ pub fn resolve<T: AsFlexItem>(items: &mut [T], container_main: u16, gap_total: u
         let mut cum_w: i64 = 0;
         let mut violation: i64 = 0;
         for it in items.iter_mut() {
-            let it = it.flex_item_mut();
             if it.flex.is_locked() {
                 continue;
             }
@@ -166,7 +148,7 @@ pub fn resolve<T: AsFlexItem>(items: &mut [T], container_main: u16, gap_total: u
 
         if violation == 0 {
             for it in items.iter_mut() {
-                it.flex_item_mut().flex = Flexibility::RIGID;
+                it.flex = Flexibility::RIGID;
             }
         } else {
             let dominant = if violation > 0 {
@@ -175,7 +157,6 @@ pub fn resolve<T: AsFlexItem>(items: &mut [T], container_main: u16, gap_total: u
                 Flexibility::SHRINKABLE
             };
             for it in items.iter_mut() {
-                let it = it.flex_item_mut();
                 if it.flex == dominant {
                     it.flex = Flexibility::RIGID;
                 }

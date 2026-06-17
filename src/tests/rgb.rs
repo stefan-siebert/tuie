@@ -64,7 +64,7 @@ fn from_hex_ignores_top_byte() {
 fn equality_and_clone() {
     let a = Rgb::new(7, 8, 9);
     let b = a;
-    let c = a.clone();
+    let c = a;
     assert_eq!(a, b);
     assert_eq!(a, c);
     assert_ne!(a, Rgb::new(7, 8, 10));

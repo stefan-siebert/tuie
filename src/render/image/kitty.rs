@@ -26,10 +26,10 @@ impl PixelSlot {
 impl Drop for PixelSlot {
     fn drop(&mut self) {
         let _ = IMAGE_SYSTEM.try_with(|system| {
-            if let Ok(mut sys) = system.try_borrow_mut() {
-                if let Some(id) = self.id.get() {
-                    sys.free(id);
-                }
+            if let Ok(mut sys) = system.try_borrow_mut()
+                && let Some(id) = self.id.get()
+            {
+                sys.free(id);
             }
         });
     }
@@ -77,7 +77,7 @@ impl ImageSystem {
     fn new() -> Self {
         let pid = std::process::id();
         let pid_high = (pid & Self::PID_MASK) << Self::SLOT_BITS;
-        crate::runtime::on_quit(emit_free_escapes_for_live_slots);
+        crate::on_quit(emit_free_escapes_for_live_slots);
         Self {
             pid_high,
             slots: Vec::new(),
@@ -119,10 +119,10 @@ impl ImageSystem {
             .filter_map(|(i, s)| s.as_ref().map(|s| (i, s.last_used)))
             .min_by_key(|(_, t)| *t)
             .expect("eviction with no live slots, invariant violated");
-        if let Some(old) = &self.slots[idx] {
-            if let Some(rc) = old.weak.upgrade() {
-                rc.set_id(None);
-            }
+        if let Some(old) = &self.slots[idx]
+            && let Some(rc) = old.weak.upgrade()
+        {
+            rc.set_id(None);
         }
         self.slots[idx] = Some(new_slot);
         self.pid_high | idx as u32
@@ -223,8 +223,8 @@ fn placement_for(
 }
 
 fn is_tmux() -> bool {
-    crate::runtime::get_terminal_info()
-        .and_then(|i| i.xtversion)
+    crate::get_runtime_info()
+        .xtversion
         .is_some_and(|v| v.starts_with("tmux "))
 }
 
@@ -259,13 +259,13 @@ fn build_transmit(
                 PixelFormat::Rgba => 32,
             };
             #[cfg(unix)]
-            if use_shm {
-                if let Some(name) = super::shm::write_image(image_id, pixels) {
-                    escape::transmit_raw_shm(
-                        out, image_id, bits_per_pixel, &name, *width, *height, tmux,
-                    );
-                    return true;
-                }
+            if use_shm
+                && let Some(name) = super::shm::write_image(image_id, pixels)
+            {
+                escape::transmit_raw_shm(
+                    out, image_id, bits_per_pixel, &name, *width, *height, tmux,
+                );
+                return true;
             }
             escape::transmit_raw(out, image_id, bits_per_pixel, pixels, *width, *height, tmux);
             true
@@ -273,23 +273,23 @@ fn build_transmit(
         SourceData::Encoded { bytes, dims, format } => {
             if *format == image::ImageFormat::Png {
                 #[cfg(unix)]
-                if use_shm {
-                    if let Some(name) = super::shm::write_image(image_id, bytes) {
-                        escape::transmit_png_shm(out, image_id, &name, tmux);
-                        return true;
-                    }
+                if use_shm
+                    && let Some(name) = super::shm::write_image(image_id, bytes)
+                {
+                    escape::transmit_png_shm(out, image_id, &name, tmux);
+                    return true;
                 }
                 escape::transmit_png(out, image_id, bytes, tmux);
                 true
             } else if let Some(rgba) = decoded {
                 #[cfg(unix)]
-                if use_shm {
-                    if let Some(name) = super::shm::write_image(image_id, rgba) {
-                        escape::transmit_raw_shm(
-                            out, image_id, 32, &name, dims.x, dims.y, tmux,
-                        );
-                        return true;
-                    }
+                if use_shm
+                    && let Some(name) = super::shm::write_image(image_id, rgba)
+                {
+                    escape::transmit_raw_shm(
+                        out, image_id, 32, &name, dims.x, dims.y, tmux,
+                    );
+                    return true;
                 }
                 escape::transmit_raw(out, image_id, 32, rgba, dims.x, dims.y, tmux);
                 true
@@ -317,7 +317,7 @@ fn cover_placement(
 ) -> (Vec2<u16>, Vec2<u16>) {
     let widget_clamped = Vec2::new(widget.x.min(max_cells), widget.y.min(max_cells));
     let src_px = source.get_pixel_dims();
-    let Some(cell_px) = crate::runtime::get_terminal_info().and_then(|i| i.cell_px) else {
+    let Some(cell_px) = crate::get_runtime_info().cell_size else {
         return (widget_clamped, Vec2::of(0u16));
     };
     if src_px.x == 0
@@ -334,16 +334,16 @@ fn cover_placement(
     let widget_wider = w_px_x * src_px.y as u64 > w_px_y * src_px.x as u64;
     let (vp, off) = if widget_wider {
         let image_h = (src_px.y as u64 * w_px_x + src_px.x as u64 / 2) / src_px.x as u64;
-        let mut r = ((image_h + cell_px.y as u64 - 1) / cell_px.y as u64).max(widget.y as u64);
-        if (r - widget.y as u64) % 2 != 0 {
+        let mut r = image_h.div_ceil(cell_px.y as u64).max(widget.y as u64);
+        if !(r - widget.y as u64).is_multiple_of(2) {
             r += 1;
         }
         let row_off = (r - widget.y as u64) / 2;
         (Vec2::new(widget.x as u64, r), Vec2::new(0u64, row_off))
     } else {
         let image_w = (src_px.x as u64 * w_px_y + src_px.y as u64 / 2) / src_px.y as u64;
-        let mut c = ((image_w + cell_px.x as u64 - 1) / cell_px.x as u64).max(widget.x as u64);
-        if (c - widget.x as u64) % 2 != 0 {
+        let mut c = image_w.div_ceil(cell_px.x as u64).max(widget.x as u64);
+        if !(c - widget.x as u64).is_multiple_of(2) {
             c += 1;
         }
         let col_off = (c - widget.x as u64) / 2;
@@ -497,7 +497,7 @@ pub(crate) fn dispatch(
     let placement = placement_for(&source.inner, &pixel_slot, vp);
 
     let tmux = is_tmux();
-    let in_gui = crate::runtime::is_gui();
+    let in_gui = crate::is_gui();
     let tick = begin_render(&pixel_slot);
 
     if !in_gui {

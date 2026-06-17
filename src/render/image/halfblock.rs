@@ -23,8 +23,8 @@ struct HalfblockLayout {
 }
 
 fn layout(placement_size: Vec2<u16>, source_px: Vec2<u32>, fill: bool) -> HalfblockLayout {
-    let cell_px = crate::runtime::get_terminal_info()
-        .and_then(|i| i.cell_px)
+    let cell_px = crate::get_runtime_info()
+        .cell_size
         .unwrap_or(Vec2::new(1, 2));
     let image_cells = if fill {
         placement_size

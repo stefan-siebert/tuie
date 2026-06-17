@@ -99,8 +99,8 @@ impl PlaceholderScanner {
 
         let placement_size = kitty::lookup_placement_size(&source_inner, run.placement_id);
         let img_dims = source_inner.get_pixel_dims();
-        let cell_px = crate::runtime::get_terminal_info()
-            .and_then(|i| i.cell_px)
+        let cell_px = crate::get_runtime_info()
+            .cell_size
             .unwrap_or(Vec2::new(1u16, 1u16));
 
         let uv_rect = Self::compute_uv_rect(
@@ -180,10 +180,10 @@ impl PlaceholderScanner {
         fg: Color,
         underline_color: Color,
     ) -> bool {
-        if let Some(run) = &self.run {
-            if run.screen_y != y {
-                self.flush(backend);
-            }
+        if let Some(run) = &self.run
+            && run.screen_y != y
+        {
+            self.flush(backend);
         }
 
         let parsed = Self::parse_placeholder(glyph, fg, underline_color);

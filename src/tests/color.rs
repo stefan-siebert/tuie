@@ -5,22 +5,22 @@ use tuie::render::color::{Color, ColorParseError};
 
 #[test]
 fn named_constants_match_base256_indices() {
-    assert_eq!(Color::BLACK, Color::Base256(0));
-    assert_eq!(Color::RED, Color::Base256(1));
-    assert_eq!(Color::GREEN, Color::Base256(2));
-    assert_eq!(Color::YELLOW, Color::Base256(3));
-    assert_eq!(Color::BLUE, Color::Base256(4));
-    assert_eq!(Color::MAGENTA, Color::Base256(5));
-    assert_eq!(Color::CYAN, Color::Base256(6));
-    assert_eq!(Color::WHITE, Color::Base256(7));
-    assert_eq!(Color::BRIGHT_BLACK, Color::Base256(8));
-    assert_eq!(Color::BRIGHT_RED, Color::Base256(9));
-    assert_eq!(Color::BRIGHT_GREEN, Color::Base256(10));
-    assert_eq!(Color::BRIGHT_YELLOW, Color::Base256(11));
-    assert_eq!(Color::BRIGHT_BLUE, Color::Base256(12));
-    assert_eq!(Color::BRIGHT_MAGENTA, Color::Base256(13));
-    assert_eq!(Color::BRIGHT_CYAN, Color::Base256(14));
-    assert_eq!(Color::BRIGHT_WHITE, Color::Base256(15));
+    assert_eq!(Color::BLACK, Color::Indexed(0));
+    assert_eq!(Color::RED, Color::Indexed(1));
+    assert_eq!(Color::GREEN, Color::Indexed(2));
+    assert_eq!(Color::YELLOW, Color::Indexed(3));
+    assert_eq!(Color::BLUE, Color::Indexed(4));
+    assert_eq!(Color::MAGENTA, Color::Indexed(5));
+    assert_eq!(Color::CYAN, Color::Indexed(6));
+    assert_eq!(Color::WHITE, Color::Indexed(7));
+    assert_eq!(Color::BRIGHT_BLACK, Color::Indexed(8));
+    assert_eq!(Color::BRIGHT_RED, Color::Indexed(9));
+    assert_eq!(Color::BRIGHT_GREEN, Color::Indexed(10));
+    assert_eq!(Color::BRIGHT_YELLOW, Color::Indexed(11));
+    assert_eq!(Color::BRIGHT_BLUE, Color::Indexed(12));
+    assert_eq!(Color::BRIGHT_MAGENTA, Color::Indexed(13));
+    assert_eq!(Color::BRIGHT_CYAN, Color::Indexed(14));
+    assert_eq!(Color::BRIGHT_WHITE, Color::Indexed(15));
 }
 
 #[test]
@@ -29,21 +29,21 @@ fn is_default_only_for_foreground_and_background() {
     assert!(Color::Background.is_default());
     assert!(!Color::RED.is_default());
     assert!(!Color::Rgb(1, 2, 3).is_default());
-    assert!(!Color::Base256(200).is_default());
+    assert!(!Color::Indexed(200).is_default());
 }
 
 #[test]
-fn color256_cube_indices() {
-    assert_eq!(Color::color256(0, 0, 0), Color::Base256(16));
-    assert_eq!(Color::color256(5, 5, 5), Color::Base256(231));
-    assert_eq!(Color::color256(1, 2, 3), Color::Base256(16 + 36 + 12 + 3));
+fn cube256_indices() {
+    assert_eq!(Color::cube256(0, 0, 0), Color::Indexed(16));
+    assert_eq!(Color::cube256(5, 5, 5), Color::Indexed(231));
+    assert_eq!(Color::cube256(1, 2, 3), Color::Indexed(16 + 36 + 12 + 3));
 }
 
 #[test]
 fn grey256_ramp_indices() {
-    assert_eq!(Color::grey256(0), Color::Base256(232));
-    assert_eq!(Color::grey256(23), Color::Base256(255));
-    assert_eq!(Color::grey256(7), Color::Base256(239));
+    assert_eq!(Color::grey256(0), Color::Indexed(232));
+    assert_eq!(Color::grey256(23), Color::Indexed(255));
+    assert_eq!(Color::grey256(7), Color::Indexed(239));
 }
 
 #[test]
@@ -72,9 +72,9 @@ fn parse_three_digit_hex_requires_prefix_and_expands() {
 
 #[test]
 fn parse_two_digit_hex_with_prefix_is_base256() {
-    assert_eq!(Color::from_str("#00").ok(), Some(Color::Base256(0)));
-    assert_eq!(Color::from_str("#ff").ok(), Some(Color::Base256(255)));
-    assert_eq!(Color::from_str("0x7f").ok(), Some(Color::Base256(0x7f)));
+    assert_eq!(Color::from_str("#00").ok(), Some(Color::Indexed(0)));
+    assert_eq!(Color::from_str("#ff").ok(), Some(Color::Indexed(255)));
+    assert_eq!(Color::from_str("0x7f").ok(), Some(Color::Indexed(0x7f)));
     assert_eq!(Color::from_str("ff").ok(), None);
 }
 
@@ -99,11 +99,11 @@ fn parse_rejects_invalid_lengths_and_chars() {
 #[test]
 fn from_str_accepts_integer_as_base256() {
     let c: Color = "0".parse().unwrap();
-    assert_eq!(c, Color::Base256(0));
+    assert_eq!(c, Color::Indexed(0));
     let c: Color = "255".parse().unwrap();
-    assert_eq!(c, Color::Base256(255));
+    assert_eq!(c, Color::Indexed(255));
     let c: Color = "42".parse().unwrap();
-    assert_eq!(c, Color::Base256(42));
+    assert_eq!(c, Color::Indexed(42));
 }
 
 #[test]
@@ -179,7 +179,7 @@ fn from_str_trims_whitespace() {
     let c: Color = "\t#000000\n".parse().unwrap();
     assert_eq!(c, Color::Rgb(0, 0, 0));
     let c: Color = "  42  ".parse().unwrap();
-    assert_eq!(c, Color::Base256(42));
+    assert_eq!(c, Color::Indexed(42));
 }
 
 #[test]
@@ -193,50 +193,11 @@ fn from_str_rejects_unknown_names() {
 }
 
 #[test]
-fn into_bits_tag_layout() {
-    assert_eq!(Color::Foreground.into_bits(), 0);
-    assert_eq!(Color::Base256(0).into_bits(), 1u32 << 24);
-    assert_eq!(Color::Base256(0xab).into_bits(), (1u32 << 24) | 0xab);
-    assert_eq!(
-        Color::Rgb(0x12, 0x34, 0x56).into_bits(),
-        (2u32 << 24) | (0x12 << 16) | (0x34 << 8) | 0x56,
-    );
-    assert_eq!(Color::Background.into_bits(), 3u32 << 24);
-}
-
-#[test]
-fn round_trip_bits_for_every_variant() {
-    let samples = [
-        Color::Foreground,
-        Color::Background,
-        Color::Base256(0),
-        Color::Base256(1),
-        Color::Base256(127),
-        Color::Base256(255),
-        Color::Rgb(0, 0, 0),
-        Color::Rgb(255, 255, 255),
-        Color::Rgb(0x12, 0x34, 0x56),
-        Color::Rgb(1, 2, 3),
-    ];
-    for c in samples {
-        let bits = c.into_bits();
-        assert_eq!(Color::from_bits(bits), c, "round trip for {c}");
-    }
-}
-
-#[test]
-fn from_bits_ignores_high_bits_above_26() {
-    let base = Color::Rgb(0x12, 0x34, 0x56).into_bits();
-    let polluted = base | 0xFC00_0000;
-    assert_eq!(Color::from_bits(polluted), Color::Rgb(0x12, 0x34, 0x56));
-}
-
-#[test]
 fn display_format_matches_variant_shape() {
     assert_eq!(format!("{}", Color::Foreground), "Foreground");
     assert_eq!(format!("{}", Color::Background), "Background");
-    assert_eq!(format!("{}", Color::RED), "Base256(1)");
-    assert_eq!(format!("{}", Color::Base256(200)), "Base256(200)");
+    assert_eq!(format!("{}", Color::RED), "Indexed(1)");
+    assert_eq!(format!("{}", Color::Indexed(200)), "Indexed(200)");
     assert_eq!(format!("{}", Color::Rgb(1, 2, 3)), "Rgb(1, 2, 3)");
 }
 
@@ -247,7 +208,7 @@ fn parse_boundary_values() {
     assert_eq!(Color::from_str("#FFFFFF").ok(), Some(Color::Rgb(255, 255, 255)));
     assert_eq!(Color::from_str("#000").ok(), Some(Color::Rgb(0, 0, 0)));
     assert_eq!(Color::from_str("#fff").ok(), Some(Color::Rgb(255, 255, 255)));
-    assert_eq!(Color::from_str("#00").ok(), Some(Color::Base256(0)));
-    assert_eq!(Color::from_str("#ff").ok(), Some(Color::Base256(255)));
+    assert_eq!(Color::from_str("#00").ok(), Some(Color::Indexed(0)));
+    assert_eq!(Color::from_str("#ff").ok(), Some(Color::Indexed(255)));
 }
 

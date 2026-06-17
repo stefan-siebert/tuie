@@ -3,7 +3,7 @@
 use crate::prelude::*;
 use crate::render::border::junction;
 use crate::widget::flex::{self, FlexItem};
-use crate::widget::{get_flow_output_size_layout, get_flow_output_size_measure};
+use crate::widget::{flow_output_size, measure_output_size};
 use chord_macro::chord;
 use sign::Directional;
 use std::cell::{Cell, RefCell};
@@ -11,7 +11,7 @@ use std::cell::{Cell, RefCell};
 type BaseSize = fn(&Layout) -> Vec2<u16>;
 
 thread_local! {
-    static EDGE_POOL: RefCell<Vec<Vec<CrossEdge>>> = RefCell::new(Vec::new());
+    static EDGE_POOL: RefCell<Vec<Vec<CrossEdge>>> = const { RefCell::new(Vec::new()) };
 }
 
 /// Leaf pane inside a [`Split`] holding a single widget.
@@ -20,8 +20,7 @@ pub struct SplitLeaf {
     bordered: bool,
     border: Option<&'static Border>,
     border_style: Style,
-    title: Option<String>,
-    title_style: Option<Style>,
+    title: Option<StyledString>,
     draggable: bool,
 }
 
@@ -46,15 +45,12 @@ impl SplitLeaf {
         self.border_style = style;
     }
 
-    /// Sets (or clears) the title drawn on this leaf's top border.
-    pub fn set_title(&mut self, title: Option<String>) {
+    /// Sets or clears the pane title rendered in the top border. The title's
+    /// colour is carried by the [`StyledString`] itself, independent of the
+    /// border style — pass a styled string to colour it, or a plain `&str`
+    /// (via `Into`) to inherit the border style.
+    pub fn set_title(&mut self, title: Option<StyledString>) {
         self.title = title;
-    }
-
-    /// Sets (or clears) a style for this leaf's title, independent of the
-    /// border style. When `None`, the title inherits the border style.
-    pub fn set_title_style(&mut self, style: Option<Style>) {
-        self.title_style = style;
     }
 }
 
@@ -396,7 +392,7 @@ impl SplitChild {
     }
 
     fn resize_root(&mut self, new_size: Vec2<u16>, gap: u16, padding: Spacing) {
-        let base_size: BaseSize = get_flow_output_size_layout;
+        let base_size: BaseSize = flow_output_size;
         if self.needs_initial_layout() {
             self.size.set(new_size);
             self.flex_distribute(gap, padding, base_size);
@@ -415,7 +411,7 @@ impl SplitChild {
     }
 
     fn resize_root_measure(&self, new_size: Vec2<u16>, gap: u16, padding: Spacing) {
-        let base_size: BaseSize = get_flow_output_size_measure;
+        let base_size: BaseSize = measure_output_size;
         if self.needs_initial_layout() {
             self.size.set(new_size);
             self.flex_distribute(gap, padding, base_size);
@@ -471,7 +467,7 @@ impl SplitChild {
         padding: Spacing,
         allow_cross_growth: bool,
     ) -> Option<u16> {
-        let base_size: BaseSize = get_flow_output_size_layout;
+        let base_size: BaseSize = flow_output_size;
         let room = self.shrink_room(axis, gap, padding, base_size);
         if room == 0 {
             return None;
@@ -519,7 +515,7 @@ impl SplitChild {
         let allocated = self.leaf_allocated(padding);
         match &self.node {
             SplitNode::Leaf(leaf) => {
-                flow_child_measure(&*leaf.widget, allocated);
+                measure_child(&*leaf.widget, allocated);
             }
             SplitNode::Container { children, .. } => {
                 for c in children {
@@ -537,12 +533,13 @@ impl SplitChild {
         direction: Sign,
         gap: u16,
     ) -> bool {
-        if let SplitNode::Leaf(ref leaf) = self.node {
-            if leaf.widget.get_id() == target {
-                let parent_size = self.size.get();
-                let (existing_size, new_size) = halve_with_gap(parent_size[split_axis], gap);
+        if let SplitNode::Leaf(ref leaf) = self.node
+            && leaf.widget.get_id() == target
+        {
+            let parent_size = self.size.get();
+            let (existing_size, new_size) = halve_with_gap(parent_size[split_axis], gap);
 
-                let old_node = std::mem::replace(
+            let old_node = std::mem::replace(
                     &mut self.node,
                     SplitNode::Container {
                         orientation: split_axis,
@@ -576,7 +573,6 @@ impl SplitChild {
                 };
                 return true;
             }
-        }
         self.node.split(target, new_leaf, split_axis, direction, gap)
     }
 
@@ -596,7 +592,7 @@ impl SplitChild {
     }
 
     fn compute_min_size(&self, gap: u16, padding: Spacing) -> Vec2<u16> {
-        Axis2D::map(|a| self.effective_min(a, gap, padding, get_flow_output_size_layout))
+        Axis2D::map(|a| self.effective_min(a, gap, padding, flow_output_size))
     }
 
     fn clear_dragged(&mut self) {
@@ -763,7 +759,7 @@ impl SplitChild {
             let (lo, hi) = if idx < rcv { (idx, rcv) } else { (rcv, idx) };
             let bridge = gap_between(&children[lo], &children[hi], gap);
             let donation = children[idx].size_along(axis) as i32 + bridge as i32;
-            children[rcv].resize_adjust(axis, donation, gap, padding, get_flow_output_size_layout);
+            children[rcv].resize_adjust(axis, donation, gap, padding, flow_output_size);
             children[rcv].dragged[axis] = None;
         }
 
@@ -843,7 +839,7 @@ impl SplitChild {
             let mut weight_sum: u32 = 0;
 
             for (i, c) in children.iter().enumerate() {
-                let already = deltas[i].abs() as u16;
+                let already = deltas[i].unsigned_abs() as u16;
                 let room = room_of(c, already);
                 let flex = c.effective_flex();
                 let w: u32 = if room == 0 {
@@ -956,7 +952,7 @@ impl SplitChild {
 
     /// Grows the pane below `divider_idx` by shrinking a pane above it.
     fn grow_at_divider(
-        children: &mut Vec<SplitChild>,
+        children: &mut [SplitChild],
         divider_idx: usize,
         axis: Axis2D,
         needed: u16,
@@ -977,7 +973,7 @@ impl SplitChild {
 
         for idx in divider_idx + 1..children.len() {
             if let Some(take) = children[idx].try_shrink(axis, needed_capped, gap, padding, allow_cross_growth) {
-                children[grow_idx].resize_adjust(axis, take as i32, gap, padding, get_flow_output_size_layout);
+                children[grow_idx].resize_adjust(axis, take as i32, gap, padding, flow_output_size);
                 return take;
             }
         }
@@ -986,7 +982,7 @@ impl SplitChild {
 
     /// Grows the pane above `divider_idx` by shrinking a pane below it.
     fn shrink_at_divider(
-        children: &mut Vec<SplitChild>,
+        children: &mut [SplitChild],
         divider_idx: usize,
         axis: Axis2D,
         needed: u16,
@@ -1007,7 +1003,7 @@ impl SplitChild {
 
         for idx in (0..=divider_idx).rev() {
             if let Some(take) = children[idx].try_shrink(axis, needed_capped, gap, padding, allow_cross_growth) {
-                children[add_idx].resize_adjust(axis, take as i32, gap, padding, get_flow_output_size_layout);
+                children[add_idx].resize_adjust(axis, take as i32, gap, padding, flow_output_size);
                 return take;
             }
         }
@@ -1045,7 +1041,7 @@ impl SplitChild {
     }
 
     fn move_divider(
-        children: &mut Vec<SplitChild>,
+        children: &mut [SplitChild],
         divider_idx: usize,
         axis: Axis2D,
         change: i32,
@@ -1132,13 +1128,13 @@ impl SplitChild {
                 let mut total = 0u16;
                 if delta > 0 {
                     for idx in ci + 1..parent.len() {
-                        let room = parent[idx].shrink_room(axis, gap, padding, get_flow_output_size_layout);
+                        let room = parent[idx].shrink_room(axis, gap, padding, flow_output_size);
                         if room == 0 {
                             continue;
                         }
                         let take = room.min(remaining - total);
-                        parent[idx].resize_adjust(axis, -(take as i32), gap, padding, get_flow_output_size_layout);
-                        parent[ci].resize_adjust(axis, take as i32, gap, padding, get_flow_output_size_layout);
+                        parent[idx].resize_adjust(axis, -(take as i32), gap, padding, flow_output_size);
+                        parent[ci].resize_adjust(axis, take as i32, gap, padding, flow_output_size);
                         total += take;
                         if total >= remaining {
                             break;
@@ -1146,13 +1142,13 @@ impl SplitChild {
                     }
                 } else {
                     for idx in (0..ci).rev() {
-                        let room = parent[idx].shrink_room(axis, gap, padding, get_flow_output_size_layout);
+                        let room = parent[idx].shrink_room(axis, gap, padding, flow_output_size);
                         if room == 0 {
                             continue;
                         }
                         let take = room.min(remaining - total);
-                        parent[idx].resize_adjust(axis, -(take as i32), gap, padding, get_flow_output_size_layout);
-                        parent[ci].resize_adjust(axis, take as i32, gap, padding, get_flow_output_size_layout);
+                        parent[idx].resize_adjust(axis, -(take as i32), gap, padding, flow_output_size);
+                        parent[ci].resize_adjust(axis, take as i32, gap, padding, flow_output_size);
                         total += take;
                         if total >= remaining {
                             break;
@@ -1305,11 +1301,11 @@ impl SplitNode {
             cuts: Vec<i32>,
         }
         thread_local! {
-            static DIVIDER_BUFS: RefCell<DividerBufs> = RefCell::new(DividerBufs {
+            static DIVIDER_BUFS: RefCell<DividerBufs> = const { RefCell::new(DividerBufs {
                 child_edges: Vec::new(),
                 next_edges: Vec::new(),
                 cuts: Vec::new(),
-            });
+            }) };
         }
 
         let SplitNode::Container {
@@ -1441,25 +1437,29 @@ impl SplitNode {
         let mut child_offset = offset;
 
         for (i, child) in children.iter().enumerate() {
-            if let SplitNode::Leaf(leaf) = &child.node {
-                if let Some(title) = &leaf.title {
-                    let has_row_above = i == 0
-                        || a != Axis2D::Y
-                        || gap_between(&children[i - 1], child, gap) > 0;
-                    if !title.is_empty() && has_row_above {
+            if let SplitNode::Leaf(leaf) = &child.node
+                && let Some(title) = &leaf.title
+            {
+                let has_row_above =
+                    i == 0 || a != Axis2D::Y || gap_between(&children[i - 1], child, gap) > 0;
+                if !title.is_empty() && has_row_above {
                         let title_y = child_offset.y - 1;
                         let title_x = child_offset.x;
                         let available = child.size.get()[Axis2D::X] as usize;
                         if title_y >= 0 && available >= 4 {
-                            let title_style = leaf.title_style.unwrap_or(leaf.border_style);
-                            ctx.set_style(base_style.apply(title_style));
+                            ctx.set_style(base_style.apply(leaf.border_style));
                             ctx.move_to(Vec2::new(title_x + 1, title_y));
                             let mut region = ctx.region(Vec2::new((available - 1) as u16, 1));
-                            write!(region, " {} ", title);
+                            write!(region, " ");
+                            for (chunk, style) in title.iter_chunks(..) {
+                                region.set_style(style);
+                                region.write(chunk);
+                            }
+                            region.set_style(Style::new());
+                            region.write(" ");
                         }
                     }
                 }
-            }
 
             child.node.render_titles(
                 child_offset,
@@ -1622,7 +1622,7 @@ impl SplitNode {
                 }) {
                     if let Some(r) = w.descendant_at_pos(
                         pos,
-                        path.as_mut().map(|p| &mut **p),
+                        path.as_deref_mut(),
                     ) {
                         if let Some(p) = &mut path {
                             p.push(w.get_id());
@@ -1651,7 +1651,7 @@ impl SplitNode {
                         pos,
                         child_offset,
                         gap,
-                        path.as_mut().map(|p| &mut **p),
+                        path.as_deref_mut(),
                     ) {
                         return Some(r);
                     }
@@ -1686,7 +1686,7 @@ impl SplitNode {
                     let grandchild = w.find_descendant_at_pos(
                         pos,
                         predicate,
-                        path.as_mut().map(|p| &mut **p),
+                        path.as_deref_mut(),
                     );
                     if grandchild.is_some() {
                         if let Some(p) = &mut path {
@@ -1719,7 +1719,7 @@ impl SplitNode {
                         predicate,
                         child_offset,
                         gap,
-                        path.as_mut().map(|p| &mut **p),
+                        path.as_deref_mut(),
                     ) {
                         return Some(r);
                     }
@@ -1754,11 +1754,11 @@ impl SplitNode {
 
         let mut target_idx = None;
         for (i, child) in children.iter().enumerate() {
-            if let SplitNode::Leaf(leaf) = &child.node {
-                if leaf.widget.get_id() == target {
-                    target_idx = Some(i);
-                    break;
-                }
+            if let SplitNode::Leaf(leaf) = &child.node
+                && leaf.widget.get_id() == target
+            {
+                target_idx = Some(i);
+                break;
             }
         }
 
@@ -1862,25 +1862,6 @@ impl SplitNode {
         None
     }
 
-    fn set_container_flex_of(&mut self, target: WidgetId, flex: u8) -> bool {
-        let SplitNode::Container { children, .. } = self else {
-            return false;
-        };
-        for child in children.iter_mut() {
-            if child.node.contains(target) {
-                if let SplitNode::Container { flex: child_flex, .. } = &mut child.node {
-                    if *child_flex == flex {
-                        return false;
-                    }
-                    *child_flex = flex;
-                    return true;
-                }
-                return false;
-            }
-        }
-        false
-    }
-
     /// Replaces a single-child container with its child.
     fn collapse_singleton(&mut self) {
         let SplitNode::Container { children, .. } = self else {
@@ -1927,17 +1908,13 @@ pub struct SplitPaneChild {
     bordered: bool,
     border: Option<&'static Border>,
     border_style: Style,
-    title: Option<String>,
-    title_style: Option<Style>,
+    title: Option<StyledString>,
     draggable: bool,
     content: SplitPaneContent,
 }
 
-/// Content payload of a [`SplitPaneChild`].
-pub enum SplitPaneContent {
-    /// A single widget leaf.
+pub(crate) enum SplitPaneContent {
     Widget(Box<dyn Widget>),
-    /// A nested split container.
     Split {
         orientation: Axis2D,
         flex: u8,
@@ -1954,7 +1931,6 @@ impl SplitPaneChild {
                 border: self.border,
                 border_style: self.border_style,
                 title: self.title,
-                title_style: self.title_style,
                 draggable: self.draggable,
             },
             SplitPaneContent::Split { .. } => {
@@ -1969,7 +1945,6 @@ impl SplitPaneChild {
             border: leaf.border,
             border_style: leaf.border_style,
             title: leaf.title,
-            title_style: leaf.title_style,
             draggable: leaf.draggable,
             content: SplitPaneContent::Widget(leaf.widget),
         }
@@ -1986,7 +1961,6 @@ impl SplitPaneChild {
                         border: self.border,
                         border_style: self.border_style,
                         title: self.title,
-                        title_style: self.title_style,
                         draggable: self.draggable,
                     }),
                     size: Cell::new(Vec2::of(0)),
@@ -2021,7 +1995,6 @@ impl<T: Widget + 'static> From<Box<T>> for SplitPaneChild {
             border: None,
             border_style: Style::new(),
             title: None,
-            title_style: None,
             draggable: true,
             content: SplitPaneContent::Widget(w),
         }
@@ -2035,7 +2008,6 @@ impl From<Box<dyn Widget>> for SplitPaneChild {
             border: None,
             border_style: Style::new(),
             title: None,
-            title_style: None,
             draggable: true,
             content: SplitPaneContent::Widget(w),
         }
@@ -2049,7 +2021,6 @@ impl From<SplitPane> for SplitPaneChild {
             border: None,
             border_style: Style::new(),
             title: None,
-            title_style: None,
             draggable: true,
             content: SplitPaneContent::Split {
                 orientation: p.orientation,
@@ -2131,7 +2102,7 @@ impl SplitPaneChild {
     }
 
     /// Sets the pane title rendered in the top border.
-    pub fn title(mut self, title: impl Into<String>) -> Self {
+    pub fn title(mut self, title: impl Into<StyledString>) -> Self {
         self.title = Some(title.into());
         self
     }
@@ -2163,6 +2134,12 @@ impl SplitPane {
     }
 }
 
+impl Default for SplitPane {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SplitPane {
     /// Creates an empty pane stacking children along the Y axis.
     pub fn new() -> Self {
@@ -2173,18 +2150,14 @@ impl SplitPane {
         }
     }
 
-    /// Creates an empty pane laying children out along the X axis.
-    pub fn horizontal() -> Self {
-        SplitPane {
-            orientation: Axis2D::X,
-            flex: 1,
-            children: Vec::new(),
-        }
+    /// Sets the orientation to [`Axis2D::X`].
+    pub fn horizontal(self) -> Self {
+        self.orientation(Axis2D::X)
     }
 
-    /// Creates an empty pane stacking children along the Y axis.
-    pub fn vertical() -> Self {
-        Self::horizontal().orientation(Axis2D::Y)
+    /// Sets the orientation to [`Axis2D::Y`].
+    pub fn vertical(self) -> Self {
+        self.orientation(Axis2D::Y)
     }
 
     /// Sets the layout `axis`.
@@ -2404,7 +2377,7 @@ impl Split {
         self.do_layout();
         self.root.reflow_leaves_mut(self.chrome.padding);
         self.rebuild_render_cache();
-        let result = self.preferred_outer_size(get_flow_output_size_layout);
+        let result = self.preferred_outer_size(flow_output_size);
         self.layout.rect.size = prev_size;
         result
     }
@@ -2413,7 +2386,7 @@ impl Split {
         let inner = self.working_inner(allocated);
         self.root.resize_root_measure(inner, self.gap, self.chrome.padding);
         self.root.reflow_leaves_measure(self.chrome.padding);
-        self.preferred_outer_size(get_flow_output_size_measure)
+        self.preferred_outer_size(measure_output_size)
     }
 
     fn rebuild_render_cache(&mut self) {
@@ -2459,19 +2432,19 @@ impl Split {
         if has_border {
             self.top_edges.clear();
             self.root.node.collect_edge_styles(
-                Axis2D::X, false, inner_offset.x as i32, self.gap, &mut self.top_edges,
+                Axis2D::X, false, inner_offset.x, self.gap, &mut self.top_edges,
             );
             self.bottom_edges.clear();
             self.root.node.collect_edge_styles(
-                Axis2D::X, true, inner_offset.x as i32, self.gap, &mut self.bottom_edges,
+                Axis2D::X, true, inner_offset.x, self.gap, &mut self.bottom_edges,
             );
             self.left_edges.clear();
             self.root.node.collect_edge_styles(
-                Axis2D::Y, false, inner_offset.y as i32, self.gap, &mut self.left_edges,
+                Axis2D::Y, false, inner_offset.y, self.gap, &mut self.left_edges,
             );
             self.right_edges.clear();
             self.root.node.collect_edge_styles(
-                Axis2D::Y, true, inner_offset.y as i32, self.gap, &mut self.right_edges,
+                Axis2D::Y, true, inner_offset.y, self.gap, &mut self.right_edges,
             );
 
             for edges in [&mut self.top_edges, &mut self.bottom_edges] {
@@ -2577,17 +2550,17 @@ impl Widget for Split {
                         continue;
                     }
                     crossed = true;
-                    if has_neg {
-                        if let Some(e) = edge_style_at(&d.edges, div.pos - 1) {
-                            cell_style = cell_style.apply(e.style);
-                            perp_neg = e.border.unwrap_or(fallback_border);
-                        }
+                    if has_neg
+                        && let Some(e) = edge_style_at(&d.edges, div.pos - 1)
+                    {
+                        cell_style = cell_style.apply(e.style);
+                        perp_neg = e.border.unwrap_or(fallback_border);
                     }
-                    if has_pos {
-                        if let Some(e) = edge_style_at(&d.edges, div.pos + 1) {
-                            cell_style = cell_style.apply(e.style);
-                            perp_pos = e.border.unwrap_or(fallback_border);
-                        }
+                    if has_pos
+                        && let Some(e) = edge_style_at(&d.edges, div.pos + 1)
+                    {
+                        cell_style = cell_style.apply(e.style);
+                        perp_pos = e.border.unwrap_or(fallback_border);
                     }
                 }
 
@@ -2762,7 +2735,7 @@ impl Widget for Split {
     ) -> Option<WidgetId> {
         self.root.node.find_leaf(&mut |w| {
             let grandchild =
-                w.find_descendant(predicate, path.as_mut().map(|p| &mut **p));
+                w.find_descendant(predicate, path.as_deref_mut());
             if grandchild.is_some() {
                 if let Some(p) = &mut path {
                     p.push(w.get_id());
@@ -2782,14 +2755,14 @@ impl Widget for Split {
     fn descendant_at_pos(
         &self,
         pos: Vec2<f32>,
-        mut path: Option<&mut Vec<WidgetId>>,
+        path: Option<&mut Vec<WidgetId>>,
     ) -> Option<WidgetId> {
         let abs_offset = self.inner_content_pos();
         self.root.node.find_descendant_at_pos(
             pos,
             abs_offset,
             self.gap,
-            path.as_mut().map(|p| &mut **p),
+            path,
         )
     }
 
@@ -2797,7 +2770,7 @@ impl Widget for Split {
         &self,
         pos: Vec2<f32>,
         predicate: &dyn Fn(&dyn Widget) -> bool,
-        mut path: Option<&mut Vec<WidgetId>>,
+        path: Option<&mut Vec<WidgetId>>,
     ) -> Option<WidgetId> {
         let abs_offset = self.inner_content_pos();
         self.root.node.find_matching_descendant_at_pos(
@@ -2805,7 +2778,7 @@ impl Widget for Split {
             predicate,
             abs_offset,
             self.gap,
-            path.as_mut().map(|p| &mut **p),
+            path,
         )
     }
 
@@ -2830,8 +2803,8 @@ impl Widget for Split {
         let Some(event) = queue.peek() else { return InputResult::Rejected; };
         match &event.chord {
             chord!(LeftClick) => {
-                let mouse = event.mouse_pos;
-                let mouse_vec = Vec2::new(mouse.x as i32, mouse.y as i32);
+                let mouse = event.cell();
+                let mouse_vec = Vec2::new(mouse.x, mouse.y);
 
                 let inner_offset = self.inner_offset();
 
@@ -2876,7 +2849,7 @@ impl Widget for Split {
                         let mut s = Vec::new();
                         self.root.snapshot_sizes(&mut s);
                         let before = Axis2D::map(|a| {
-                            self.root.preferred_or_min(a, self.gap, self.chrome.padding, get_flow_output_size_layout)
+                            self.root.preferred_or_min(a, self.gap, self.chrome.padding, flow_output_size)
                         });
                         Some((s, before))
                     } else {
@@ -2894,7 +2867,7 @@ impl Widget for Split {
                         ) else {
                             continue;
                         };
-                        let delta = event.mouse_pos[a] as i32
+                        let delta = event.cell()[a]
                             - div_pos
                             - dd.grab_offset;
                         if delta != 0 {
@@ -2916,7 +2889,7 @@ impl Widget for Split {
                     if let Some((snap, before)) = snapshot {
                         let inner = self.inner_content_size();
                         let after = Axis2D::map(|a| {
-                            self.root.preferred_or_min(a, self.gap, self.chrome.padding, get_flow_output_size_layout)
+                            self.root.preferred_or_min(a, self.gap, self.chrome.padding, flow_output_size)
                         });
                         let worsens = [Axis2D::X, Axis2D::Y].iter().any(|&a| {
                             after[a] > inner[a] && after[a] > before[a]
@@ -2974,22 +2947,38 @@ impl Split {
         })
     }
 
-    /// Creates an empty split laying children out along the X axis.
-    pub fn horizontal() -> Box<Self> {
-        Self::new(SplitPane::horizontal())
-    }
-
-    /// Creates an empty split stacking children along the Y axis.
-    pub fn vertical() -> Box<Self> {
-        Self::new(SplitPane::vertical())
+    /// Builder form of [`Split::set_orientation`].
+    pub fn orientation(mut self: Box<Self>, axis: Axis2D) -> Box<Self> {
+        self.set_orientation(axis);
+        self
     }
 
     /// Sets the layout `axis` of the root container.
-    pub fn orientation(mut self: Box<Self>, axis: Axis2D) -> Box<Self> {
-        if let SplitNode::Container { orientation, .. } = &mut self.root.node {
+    pub fn set_orientation(&mut self, axis: Axis2D) {
+        if let SplitNode::Container { orientation, .. } = &mut self.root.node
+            && *orientation != axis
+        {
             *orientation = axis;
+            self.dirty_layout();
         }
-        self
+    }
+
+    /// Returns the layout axis of the root container.
+    pub fn get_orientation(&self) -> Axis2D {
+        match &self.root.node {
+            SplitNode::Container { orientation, .. } => *orientation,
+            SplitNode::Leaf(_) => Axis2D::Y,
+        }
+    }
+
+    /// Returns `true` when the orientation is [`Axis2D::X`].
+    pub fn is_horizontal(&self) -> bool {
+        self.get_orientation() == Axis2D::X
+    }
+
+    /// Returns `true` when the orientation is [`Axis2D::Y`].
+    pub fn is_vertical(&self) -> bool {
+        self.get_orientation() == Axis2D::Y
     }
 
     /// Appends `children` to the root container.
@@ -3088,7 +3077,7 @@ impl Split {
         let target = target.untyped();
         let new_leaf = child.into().into_leaf_data();
         if self.root.split(target, new_leaf, axis, direction, self.gap) {
-            self.root.reinforce_mins(self.gap, self.chrome.padding, get_flow_output_size_layout);
+            self.root.reinforce_mins(self.gap, self.chrome.padding, flow_output_size);
             self.dirty_layout();
         }
     }
@@ -3106,17 +3095,8 @@ impl Split {
     ) {
         let new_node = SplitNode::Leaf(child.into().into_leaf_data());
         self.root.push_to_root(new_node, axis, direction, self.gap);
-        self.root.reinforce_mins(self.gap, self.chrome.padding, get_flow_output_size_layout);
+        self.root.reinforce_mins(self.gap, self.chrome.padding, flow_output_size);
         self.dirty_layout();
-    }
-
-    /// Sets the flex weight of the container holding `target`.
-    pub fn set_container_flex_of(&mut self, target: WidgetId<impl ?Sized>, flex: u8) -> bool {
-        let changed = self.root.node.set_container_flex_of(target.untyped(), flex);
-        if changed {
-            self.dirty_layout();
-        }
-        changed
     }
 
     /// Returns whether `target` exists anywhere in the split.
@@ -3141,8 +3121,8 @@ impl Split {
     /// Resets pane sizes from flex weights, discarding drag adjustments.
     pub fn redistribute(&mut self) {
         self.root.clear_dragged();
-        self.root.flex_distribute(self.gap, self.chrome.padding, get_flow_output_size_layout);
-        self.root.reinforce_mins(self.gap, self.chrome.padding, get_flow_output_size_layout);
+        self.root.flex_distribute(self.gap, self.chrome.padding, flow_output_size);
+        self.root.reinforce_mins(self.gap, self.chrome.padding, flow_output_size);
         self.dirty_layout();
     }
 }

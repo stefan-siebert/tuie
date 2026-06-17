@@ -163,13 +163,14 @@ thread_local! {
 
 /// Runtime configuration.
 #[derive(Clone, Copy)]
+#[non_exhaustive]
 pub struct TuiConfig {
     /// The minimum number of rows or columns between the cursor and the scroll edge.
     pub scrolloff: u16,
     /// The width of a tab character in cells.
     pub tabstop: u8,
     /// Whether inserted tabs are expanded to spaces.
-    pub expandtabs: bool,
+    pub expand_tabs: bool,
     /// Whether the cursor blinks.
     pub cursor_blink: bool,
     /// Whether the terminal reports mouse hover events.
@@ -181,25 +182,38 @@ pub struct TuiConfig {
 crate::config_module!(TuiConfig {
     scrolloff: 1,
     tabstop: 8,
-    expandtabs: true,
+    expand_tabs: true,
     cursor_blink: true,
     hover_events: true,
     always_selected: false,
 });
 
-/// Terminal capabilities and dimensions.
+/// Host capabilities and dimensions.
 #[derive(Clone)]
-pub struct TerminalInfo {
-    /// The terminal size in cells.
+#[non_exhaustive]
+pub struct RuntimeInfo {
+    /// The surface size in cells.
     pub size: Vec2<u16>,
-    /// The pixel size of a single cell, when reported by the terminal.
-    pub cell_px: Option<Vec2<u16>>,
-    /// Whether pixel-precision mouse reporting is enabled.
-    pub mouse_pixel_capture: bool,
-    /// The detected color scheme, when reported by the terminal.
+    /// The pixel size of a single cell, when reported by the host.
+    pub cell_size: Option<Vec2<u16>>,
+    /// Whether [`InputEvent::pos`](crate::widget::input::InputEvent::pos) carries real sub-cell precision.
+    pub subcell_events: bool,
+    /// The detected color scheme, when reported by the host.
     pub color_scheme: Option<ColorScheme>,
     /// The raw `XTVERSION` response, if the terminal replied.
     pub xtversion: Option<String>,
+}
+
+impl Default for RuntimeInfo {
+    fn default() -> Self {
+        Self {
+            size: Vec2::of(0u16),
+            cell_size: None,
+            subcell_events: false,
+            color_scheme: None,
+            xtversion: None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Default)]
@@ -229,6 +243,7 @@ impl FrameRender {
 
 /// Position and size of the focused widget.
 #[derive(Clone)]
+#[non_exhaustive]
 pub struct FocusedMeasure {
     /// The position of the focused widget in window coordinates.
     pub pos: Vec2<i32>,
@@ -308,14 +323,24 @@ struct RuntimeContext {
     focus_request: Option<WidgetId>,
     navigate_request: Option<NavigateOp>,
     focus_chain: Vec<WidgetId>,
-    terminal_info: Option<TerminalInfo>,
+    runtime_info: Option<RuntimeInfo>,
     image_caps: ImageCaps,
     pending_cell_px: Option<Vec2<u16>>,
+    buffer: std::io::BufWriter<Box<dyn Write>>,
+    panic_hook: Arc<Mutex<Option<PanicHook>>>,
+    renderer: GridRenderer,
+    terminal_initialized: bool,
+    cursor_visible: bool,
+    emulator_cursor: Option<(CursorShape, Vec2<i32>)>,
+    buf: String,
+    mouse_pixel_dpr: Option<Vec2<u8>>,
 }
 
 impl RuntimeContext {
     fn new() -> Self {
         let (spawn_tx, spawn_rx) = sync_mpsc::channel();
+        let buffer: std::io::BufWriter<Box<dyn Write>> =
+            std::io::BufWriter::with_capacity(65536, Box::new(std::io::stdout()));
         RuntimeContext {
             mode: Mode::Tui,
             reveal_request: None,
@@ -330,9 +355,17 @@ impl RuntimeContext {
             focus_request: None,
             navigate_request: None,
             focus_chain: Vec::new(),
-            terminal_info: None,
+            runtime_info: None,
             image_caps: ImageCaps::default(),
             pending_cell_px: None,
+            buffer,
+            panic_hook: Arc::new(Mutex::new(None)),
+            renderer: GridRenderer::new(),
+            terminal_initialized: false,
+            cursor_visible: true,
+            emulator_cursor: None,
+            buf: String::new(),
+            mouse_pixel_dpr: None,
         }
     }
 }
@@ -432,9 +465,10 @@ pub fn is_gui() -> bool {
     with_ctx(|c| c.mode == Mode::Gui)
 }
 
-/// Returns the current [`TerminalInfo`], or `None` before the startup query completes.
-pub fn get_terminal_info() -> Option<TerminalInfo> {
-    with_ctx(|ctx| ctx.terminal_info.clone())
+/// Returns the current [`RuntimeInfo`]. Before startup completes, returns the [`Default`]
+/// (`size: 0`, `cell_size: None`, etc.) rather than panicking.
+pub fn get_runtime_info() -> RuntimeInfo {
+    with_ctx(|ctx| ctx.runtime_info.clone().unwrap_or_default())
 }
 
 #[cfg(feature = "images")]
@@ -442,21 +476,9 @@ pub(crate) fn get_image_caps() -> ImageCaps {
     with_ctx(|ctx| ctx.image_caps)
 }
 
-/// Returns the pixel size of one cell along `axis`, at least 1.
-pub(crate) fn cell_px_along(axis: Axis2D) -> u16 {
-    if !is_gui() {
-        return 1;
-    }
-    get_terminal_info()
-        .and_then(|i| i.cell_px)
-        .map(|c| c[axis])
-        .unwrap_or(1)
-        .max(1)
-}
-
-fn update_terminal_info(f: impl FnOnce(&mut TerminalInfo)) {
+pub(crate) fn update_runtime_info(f: impl FnOnce(&mut RuntimeInfo)) {
     with_ctx_mut(|ctx| {
-        if let Some(info) = ctx.terminal_info.as_mut() {
+        if let Some(info) = ctx.runtime_info.as_mut() {
             f(info);
         }
     });
@@ -466,9 +488,9 @@ fn update_terminal_info(f: impl FnOnce(&mut TerminalInfo)) {
 pub(crate) fn sync_gui_grid_size(cells: Vec2<u16>, cell_px: Vec2<u16>) {
     with_ctx_mut(|ctx| {
         ctx.pending_cell_px = Some(cell_px);
-        if let Some(info) = ctx.terminal_info.as_mut() {
+        if let Some(info) = ctx.runtime_info.as_mut() {
             info.size = cells;
-            info.cell_px = Some(cell_px);
+            info.cell_size = Some(cell_px);
         }
     });
 }
@@ -735,7 +757,7 @@ pub fn is_focused(id: WidgetId<impl ?Sized>) -> bool {
 }
 
 /// Returns true when `id` lies anywhere on the focus chain.
-pub fn is_focus_chain(id: WidgetId<impl ?Sized>) -> bool {
+pub fn in_focus_chain(id: WidgetId<impl ?Sized>) -> bool {
     let id = id.untyped();
     with_ctx(|ctx| ctx.focus_chain.contains(&id))
 }
@@ -746,7 +768,7 @@ thread_local! {
 
 #[cfg(feature = "gui")]
 thread_local! {
-    static GUI: RefCell<Option<crate::gui::Gui>> = RefCell::new(None);
+    static GUI: RefCell<Option<crate::gui::Gui>> = const { RefCell::new(None) };
 }
 
 fn with_runtime_mut<R>(f: impl FnOnce(&mut Runtime) -> R) -> R {
@@ -759,6 +781,28 @@ fn with_ctx<R>(f: impl FnOnce(&RuntimeContext) -> R) -> R {
 
 fn with_ctx_mut<R>(f: impl FnOnce(&mut RuntimeContext) -> R) -> R {
     RUNTIME_CTX.with_borrow_mut(f)
+}
+
+fn with_render_io<R>(
+    f: impl FnOnce(&mut GridRenderer, &mut std::io::BufWriter<Box<dyn Write>>, &mut String) -> R,
+) -> R {
+    let (mut renderer, mut buffer, mut buf) = with_ctx_mut(|ctx| {
+        (
+            std::mem::take(&mut ctx.renderer),
+            std::mem::replace(
+                &mut ctx.buffer,
+                std::io::BufWriter::with_capacity(0, Box::new(std::io::sink())),
+            ),
+            std::mem::take(&mut ctx.buf),
+        )
+    });
+    let out = f(&mut renderer, &mut buffer, &mut buf);
+    with_ctx_mut(|ctx| {
+        ctx.renderer = renderer;
+        ctx.buffer = buffer;
+        ctx.buf = buf;
+    });
+    out
 }
 
 /// Registers a callback invoked just before the runtime tears down.
@@ -775,10 +819,10 @@ fn take_quit_handlers() -> Vec<Box<dyn FnMut(&mut dyn Write)>> {
         let mut i = ctx.tasks.items.len();
         while i > 0 {
             i -= 1;
-            if matches!(ctx.tasks.items[i].1, TaskKind::Quit(_)) {
-                if let (_, TaskKind::Quit(cb)) = ctx.tasks.items.swap_remove(i) {
-                    out.push(cb);
-                }
+            if matches!(ctx.tasks.items[i].1, TaskKind::Quit(_))
+                && let (_, TaskKind::Quit(cb)) = ctx.tasks.items.swap_remove(i)
+            {
+                out.push(cb);
             }
         }
         out.reverse();
@@ -795,13 +839,13 @@ fn make_queue(events: &[InputEvent], flushing: bool, unhandled: bool) -> InputQu
 }
 
 fn dispatch_input(target: &mut dyn Widget, key_queue: &mut [InputEvent], flushing: bool, unhandled: bool) -> (InputResult, usize) {
-    let content_pos = target.get_pos();
+    let content_pos = target.get_pos().map(|v| v as f32);
     for event in key_queue.iter_mut() {
-        event.mouse_pos = event.mouse_window_pos - content_pos;
+        event.pos -= content_pos;
     }
     let mut queue = make_queue(key_queue, flushing, unhandled);
     let result = target.on_input(&mut queue);
-    (result, queue.get_consumed())
+    (result, queue.get_consumed_count())
 }
 
 fn process_keys_interleaved(root: &mut dyn Widget) {
@@ -818,94 +862,48 @@ fn process_keys_interleaved(root: &mut dyn Widget) {
         let mut pending = false;
         let mut total_consumed = 0;
 
-        if path.is_empty() {
-            with_runtime_mut(|rt| {
+        let passes: Vec<(usize, bool)> = if path.is_empty() {
+            vec![(0, false), (0, true)]
+        } else {
+            (0..path.len()).map(|i| (i, false))
+                .chain((0..path.len()).rev().map(|i| (i, true)))
+                .collect()
+        };
+
+        with_runtime_mut(|rt| {
+            for (depth, unhandled) in passes {
                 if rt.key_queue.is_empty() {
-                    return;
+                    break;
                 }
                 let mut key_queue = rt.key_queue.clone();
                 let flushing = rt.key_queue_flushing;
                 let (result, consumed) = {
                     let active_root = rt.get_active_root_mut(root);
-                    dispatch_input(active_root, &mut key_queue, flushing, false)
+                    let target = if path.is_empty() {
+                        active_root
+                    } else {
+                        match walk_path_mut(active_root, &path[..=depth]) {
+                            Some(target) => target,
+                            None => continue,
+                        }
+                    };
+                    dispatch_input(target, &mut key_queue, flushing, unhandled)
                 };
                 rt.flush_events(root);
                 match result {
                     InputResult::Handled if consumed > 0 => {
                         handled = true;
                         total_consumed = consumed;
+                        break;
                     }
                     InputResult::Pending => {
                         pending = true;
+                        break;
                     }
                     _ => {}
                 }
-            });
-        }
-
-        if !handled && !pending {
-            with_runtime_mut(|rt| {
-                for i in 0..path.len() {
-                    if rt.key_queue.is_empty() {
-                        break;
-                    }
-                    let mut key_queue = rt.key_queue.clone();
-                    let flushing = rt.key_queue_flushing;
-                    let (result, consumed) = {
-                        let active_root = rt.get_active_root_mut(root);
-                        match walk_path_mut(active_root, &path[..=i]) {
-                            Some(target) => dispatch_input(target, &mut key_queue, flushing, false),
-                            None => continue,
-                        }
-                    };
-                    rt.flush_events(root);
-                    match result {
-                        InputResult::Handled if consumed > 0 => {
-                            handled = true;
-                            total_consumed = consumed;
-                            break;
-                        }
-                        InputResult::Pending => {
-                            pending = true;
-                            break;
-                        }
-                        _ => {}
-                    }
-                }
-            });
-        }
-
-        if !handled && !pending {
-            with_runtime_mut(|rt| {
-                for i in (0..path.len()).rev() {
-                    if rt.key_queue.is_empty() {
-                        break;
-                    }
-                    let mut key_queue = rt.key_queue.clone();
-                    let flushing = rt.key_queue_flushing;
-                    let (result, consumed) = {
-                        let active_root = rt.get_active_root_mut(root);
-                        match walk_path_mut(active_root, &path[..=i]) {
-                            Some(target) => dispatch_input(target, &mut key_queue, flushing, true),
-                            None => continue,
-                        }
-                    };
-                    rt.flush_events(root);
-                    match result {
-                        InputResult::Handled if consumed > 0 => {
-                            handled = true;
-                            total_consumed = consumed;
-                            break;
-                        }
-                        InputResult::Pending => {
-                            pending = true;
-                            break;
-                        }
-                        _ => {}
-                    }
-                }
-            });
-        }
+            }
+        });
 
         let cont = with_runtime_mut(|rt| {
             if handled {
@@ -946,19 +944,19 @@ fn process_keys_interleaved(root: &mut dyn Widget) {
 
 /// Replaces the writer used to flush rendered frames.
 pub fn set_output(output: impl Write + 'static) {
-    with_runtime_mut(|rt| {
-        rt.buffer = std::io::BufWriter::with_capacity(65536, Box::new(output));
+    with_ctx_mut(|ctx| {
+        ctx.buffer = std::io::BufWriter::with_capacity(65536, Box::new(output));
     });
 }
 
 /// Enters the alternate screen and enables raw mode.
 pub fn enable() -> std::io::Result<()> {
-    with_runtime_mut(|rt| rt.enable())
+    with_ctx_mut(|ctx| ctx.enable())
 }
 
 /// Restores the terminal state changed by [`enable`].
 pub fn disable() -> std::io::Result<()> {
-    with_runtime_mut(|rt| rt.disable())
+    with_ctx_mut(|ctx| ctx.disable())
 }
 
 /// Requests a suspend: the next runtime tick disables the terminal, raises `SIGSTOP`, and
@@ -972,15 +970,15 @@ pub(crate) fn update(
     root: &mut dyn Widget,
     events: &[RuntimeEvent],
 ) -> std::io::Result<Option<std::time::Duration>> {
-    let inactive = with_runtime_mut(|rt| rt.panic_hook.lock().unwrap().is_none());
+    let inactive = with_ctx(|ctx| ctx.panic_hook.lock().unwrap().is_none());
     if inactive {
-        with_runtime_mut(|rt| rt.enable())?;
+        with_ctx_mut(|ctx| ctx.enable())?;
     }
 
     for event in events {
         match event {
             RuntimeEvent::Suspend => {
-                with_runtime_mut(|rt| rt.suspend())?;
+                with_ctx_mut(|ctx| ctx.suspend())?;
                 dirty_layout();
             }
             RuntimeEvent::Resize(size) => {
@@ -995,10 +993,10 @@ pub(crate) fn update(
                     if let Some(px) = cell_px {
                         ctx.pending_cell_px = Some(px);
                     }
-                    if let Some(info) = ctx.terminal_info.as_mut() {
+                    if let Some(info) = ctx.runtime_info.as_mut() {
                         info.size = *size;
                         if let Some(new_physical) = cell_px {
-                            info.cell_px = Some(new_physical);
+                            info.cell_size = Some(new_physical);
                         }
                     }
                 });
@@ -1032,22 +1030,22 @@ pub(crate) fn update(
     let next_timeout = with_runtime_mut(|rt| rt.handle_events_finish(root));
 
     #[cfg(feature = "gui")]
-    if let Some(Some(deadline)) = try_with_gui_state(|s| s.next_blink_wake) {
-        if std::time::Instant::now() >= deadline {
-            dirty_paint();
-        }
+    if let Some(Some(deadline)) = try_with_gui_state(|s| s.next_blink_wake)
+        && std::time::Instant::now() >= deadline
+    {
+        dirty_paint();
     }
 
     let outcome = with_runtime_mut(|rt| rt.layout_and_render(root))?;
 
-    if is_gui() {
-        if let FrameRender::Painted(cursor) = outcome {
-            #[cfg(feature = "gui")]
-            with_runtime_mut(|rt| rt.present_gui(root, cursor));
-            #[cfg(not(feature = "gui"))]
-            let _ = cursor;
+    if is_gui()
+        && let FrameRender::Painted(cursor) = outcome
+    {
+        #[cfg(feature = "gui")]
+        with_runtime_mut(|rt| rt.present_gui(root, cursor));
+        #[cfg(not(feature = "gui"))]
+        let _ = cursor;
         }
-    }
 
     #[cfg(feature = "gui")]
     let next_timeout = {
@@ -1091,12 +1089,12 @@ pub fn start_gui(
     root: Box<dyn Widget>,
 ) -> std::io::Result<std::process::ExitCode> {
     with_ctx_mut(|c| c.mode = Mode::Gui);
-    with_runtime_mut(|rt| {
-        rt.buffer =
+    with_ctx_mut(|ctx| {
+        ctx.buffer =
             std::io::BufWriter::with_capacity(4096, Box::new(std::io::sink()));
     });
     let result = (|| -> std::io::Result<u8> {
-        with_runtime_mut(|rt| rt.enable())?;
+        with_ctx_mut(|ctx| ctx.enable())?;
         let event_loop = GUI
             .with_borrow_mut(|g| {
                 g.as_mut()
@@ -1104,27 +1102,22 @@ pub fn start_gui(
                     .event_loop
                     .take()
             })
-            .ok_or_else(|| {
-                std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    "tuie: event loop already consumed",
-                )
-            })?;
+            .ok_or_else(|| std::io::Error::other("tuie: event loop already consumed"))?;
         let _ = EVENT_LOOP_PROXY.set(event_loop.create_proxy());
         let mut handler = crate::gui::RunHandler::new(root);
         event_loop
             .run_app(&mut handler)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+            .map_err(|e| std::io::Error::other(e.to_string()))?;
         let code = try_with_gui_state(|s| s.exit_code).flatten().unwrap_or(0);
-        let _ = with_runtime_mut(|rt| {
-            let mut handlers = take_quit_handlers();
+        let mut handlers = take_quit_handlers();
+        with_ctx_mut(|ctx| {
             for cb in handlers.iter_mut() {
-                cb(&mut rt.buffer);
+                cb(&mut ctx.buffer);
             }
         });
         Ok(code)
     })();
-    let _ = with_runtime_mut(|rt| rt.disable());
+    let _ = with_ctx_mut(|ctx| ctx.disable());
     result.map(std::process::ExitCode::from)
 }
 
@@ -1136,10 +1129,10 @@ fn run_terminal(root: &mut dyn Widget) -> std::io::Result<u8> {
                 RuntimeEvent::Quit(c) => Some(*c),
                 _ => None,
             }) {
-                let _ = with_runtime_mut(|rt| {
-                    let mut handlers = take_quit_handlers();
+                let mut handlers = take_quit_handlers();
+                with_ctx_mut(|ctx| {
                     for cb in handlers.iter_mut() {
-                        cb(&mut rt.buffer);
+                        cb(&mut ctx.buffer);
                     }
                 });
                 return Ok(code);
@@ -1148,33 +1141,32 @@ fn run_terminal(root: &mut dyn Widget) -> std::io::Result<u8> {
             events = read(timeout)?;
         }
     })();
-    let _ = with_runtime_mut(|rt| rt.disable());
+    let _ = with_ctx_mut(|ctx| ctx.disable());
     result
 }
 
-/// Resets the runtime to a clean state for an in-process test at `size`.
-pub fn test_init(size: Vec2<u16>) {
+/// Resets the runtime to a clean state for an in-process emulator at `size`.
+pub(crate) fn init_emulator(size: Vec2<u16>) {
     RUNTIME.with_borrow_mut(|rt| *rt = Runtime::new());
     with_ctx_mut(|ctx| *ctx = RuntimeContext::new());
-    with_runtime_mut(|rt| {
-        *rt.panic_hook.lock().unwrap() = Some(Box::new(|_| {}));
+    with_ctx_mut(|ctx| {
+        *ctx.panic_hook.lock().unwrap() = Some(Box::new(|_| {}));
     });
     set_output(std::io::sink());
     with_ctx_mut(|ctx| {
-        ctx.terminal_info = Some(TerminalInfo {
-            size,
-            cell_px: None,
-            mouse_pixel_capture: false,
-            color_scheme: None,
-            xtversion: None,
-        });
+        ctx.runtime_info = Some(RuntimeInfo { size, ..Default::default() });
         ctx.image_caps = ImageCaps::default();
     });
 }
 
 /// Returns the most recently rendered frame as a [`crate::render::style::StyledString`] snapshot.
-pub fn get_snapshot() -> crate::render::style::StyledString {
-    with_runtime_mut(|rt| rt.renderer.get_snapshot())
+pub(crate) fn get_emulator_snapshot() -> crate::render::style::StyledString {
+    with_ctx(|ctx| ctx.renderer.get_snapshot())
+}
+
+/// Returns the cursor from the most recently rendered emulator frame.
+pub(crate) fn get_emulator_cursor() -> Option<(CursorShape, Vec2<i32>)> {
+    with_ctx(|ctx| ctx.emulator_cursor)
 }
 
 fn read(timeout: Option<Duration>) -> std::io::Result<Vec<RuntimeEvent>> {
@@ -1209,17 +1201,11 @@ pub(crate) fn take_pending_gui_events() -> Vec<RuntimeEvent> {
 }
 
 struct Runtime {
-    buffer: std::io::BufWriter<Box<dyn Write>>,
-    panic_hook: Arc<Mutex<Option<PanicHook>>>,
-    renderer: GridRenderer,
-    terminal_initialized: bool,
     last_scroll: std::time::Instant,
     scroll_held: bool,
     scroll_accum: Vec2<f32>,
-    scroll_pos: Vec2<i32>,
-    mouse_pos: Vec2<i32>,
-    cursor_visible: bool,
-    buf: String,
+    scroll_pos: Vec2<f32>,
+    mouse_pos: Vec2<f32>,
     dragging: bool,
     scroll_path: Vec<WidgetId>,
     mouse_path: Vec<WidgetId>,
@@ -1231,7 +1217,6 @@ struct Runtime {
     has_rendered: bool,
     pending_events: Vec<RuntimeEvent>,
     popups: Vec<crate::runtime::popup::ActivePopup>,
-    mouse_pixel_dpr: Option<Vec2<u8>>,
 }
 
 fn find_visible_focusable(
@@ -1290,23 +1275,15 @@ impl Runtime {
     }
 
     fn new() -> Self {
-        let buffer: std::io::BufWriter<Box<dyn Write>> =
-            std::io::BufWriter::with_capacity(65536, Box::new(std::io::stdout()));
         Self {
-            buffer,
-            panic_hook: Arc::new(Mutex::new(None)),
-            cursor_visible: true,
-            buf: String::new(),
-            renderer: GridRenderer::new(),
-            terminal_initialized: false,
             scroll_path: Vec::new(),
             dragging: false,
             mouse_path: Vec::new(),
             last_scroll: std::time::Instant::now(),
             scroll_held: false,
             scroll_accum: Vec2::new(0.0, 0.0),
-            scroll_pos: Vec2::of(-1),
-            mouse_pos: Vec2::of(-1),
+            scroll_pos: Vec2::of(-1.0),
+            mouse_pos: Vec2::of(-1.0),
 
             focus_chain: Vec::new(),
             curswant: Vec2::of(0i32),
@@ -1316,12 +1293,13 @@ impl Runtime {
             has_rendered: false,
             pending_events: Vec::new(),
             popups: Vec::new(),
-            mouse_pixel_dpr: None,
         }
     }
+}
 
+impl RuntimeContext {
     fn enable(&mut self) -> std::io::Result<()> {
-        match with_ctx(|c| c.mode) {
+        match self.mode {
             Mode::Tui => self.enable_terminal(),
             #[cfg(feature = "gui")]
             Mode::Gui => self.enable_gui(),
@@ -1412,20 +1390,17 @@ impl Runtime {
             );
         }
         let (cell_size, cell_px) = with_gui_state(|s| (s.cell_size, s.font_cell_px()));
-        with_ctx_mut(|ctx| {
-            ctx.pending_cell_px = Some(cell_px);
-            ctx.terminal_info = Some(TerminalInfo {
-                size: cell_size,
-                cell_px: Some(cell_px),
-                mouse_pixel_capture: false,
-                color_scheme: None,
-                xtversion: None,
-            });
-            ctx.image_caps = ImageCaps::default();
+        self.pending_cell_px = Some(cell_px);
+        self.runtime_info = Some(RuntimeInfo {
+            size: cell_size,
+            cell_size: Some(cell_px),
+            subcell_events: true,
+            ..Default::default()
         });
+        self.image_caps = ImageCaps::default();
         self.renderer.clear();
         self.cursor_visible = true;
-        dirty_layout();
+        self.dirty |= DirtyImpact::Layout;
         Ok(())
     }
 
@@ -1446,72 +1421,62 @@ impl Runtime {
                 let color_handles = crate::theme::harmonious::add_color_queries(&mut batch);
 
                 let physical = physical_cell_px();
-                let mut info = TerminalInfo {
+                let mut info = RuntimeInfo {
                     size: initial_size,
-                    cell_px: physical,
-                    mouse_pixel_capture: false,
-                    color_scheme: None,
-                    xtversion: None,
+                    cell_size: physical,
+                    ..Default::default()
                 };
                 let mut caps = ImageCaps::default();
 
-                match batch.execute() {
-                    Ok(results) => {
-                        let kitty_reply = results.get(&kitty_h).unwrap_or(None);
-                        caps.supports_kitty_graphics = kitty_reply.is_some();
-                        caps.supports_kitty_shm = kitty_reply == Some(true);
-                        caps.supports_sixel = results.get(&sixel_h).unwrap_or(false);
-                        if let Some(px) = results.get(&cell_px_h).unwrap_or(None) {
-                            info.cell_px = Some(Vec2::new(px.width, px.height));
-                        }
-                        if let (Some(win), Some(cell)) = (
-                            results.get(&win_px_h).unwrap_or(None),
-                            info.cell_px,
-                        ) {
-                            let round_div = |num: u32, den: u32| {
-                                let den = den.max(1);
-                                ((num + den / 2) / den).clamp(1, 4) as u8
-                            };
-                            self.mouse_pixel_dpr = Some(Vec2::new(
-                                round_div(
-                                    cell.x as u32 * initial_size.x as u32,
-                                    win.width as u32,
-                                ),
-                                round_div(
-                                    cell.y as u32 * initial_size.y as u32,
-                                    win.height as u32,
-                                ),
-                            ));
-                        }
-                        info.mouse_pixel_capture =
-                            results.get(&mouse_px_h).unwrap_or(None).unwrap_or(false)
-                                && self.mouse_pixel_dpr.is_some();
-                        if let Some(ver) = results.get(&xtver).unwrap_or(None) {
-                            if ver.starts_with("WezTerm ") {
-                                caps.supports_kitty_graphics = false;
-                                caps.supports_kitty_shm = false;
-                            }
-                            info.xtversion = Some(ver);
-                        }
-                        #[cfg(feature = "harmonious")]
-                        match crate::theme::harmonious::build_palette_from_batch(color_handles, &results) {
-                            Ok(palette) => {
-                                crate::theme::harmonious::apply_palette(palette);
-                            }
-                            Err(_) => {}
-                        }
+                if let Ok(results) = batch.execute() {
+                    let kitty_reply = results.get(&kitty_h).unwrap_or(None);
+                    caps.supports_kitty_graphics = kitty_reply.is_some();
+                    caps.supports_kitty_shm = kitty_reply == Some(true);
+                    caps.supports_sixel = results.get(&sixel_h).unwrap_or(false);
+                    if let Some(px) = results.get(&cell_px_h).unwrap_or(None) {
+                        info.cell_size = Some(Vec2::new(px.width, px.height));
                     }
-                    Err(_) => {}
+                    if let (Some(win), Some(cell)) = (
+                        results.get(&win_px_h).unwrap_or(None),
+                        info.cell_size,
+                    ) {
+                        let round_div = |num: u32, den: u32| {
+                            let den = den.max(1);
+                            ((num + den / 2) / den).clamp(1, 4) as u8
+                        };
+                        self.mouse_pixel_dpr = Some(Vec2::new(
+                            round_div(
+                                cell.x as u32 * initial_size.x as u32,
+                                win.width as u32,
+                            ),
+                            round_div(
+                                cell.y as u32 * initial_size.y as u32,
+                                win.height as u32,
+                            ),
+                        ));
+                    }
+                    info.subcell_events =
+                        results.get(&mouse_px_h).unwrap_or(None).unwrap_or(false)
+                            && self.mouse_pixel_dpr.is_some();
+                    if let Some(ver) = results.get(&xtver).unwrap_or(None) {
+                        if ver.starts_with("WezTerm ") {
+                            caps.supports_kitty_graphics = false;
+                            caps.supports_kitty_shm = false;
+                        }
+                        info.xtversion = Some(ver);
+                    }
+                    #[cfg(feature = "harmonious")]
+                    if let Ok(palette) = crate::theme::harmonious::build_palette_from_batch(color_handles, &results) {
+                        crate::theme::harmonious::apply_palette(palette);
+                    }
                 }
 
                 #[cfg(all(unix, feature = "images"))]
                 crate::render::image::shm::unlink_probe();
 
-                with_ctx_mut(|ctx| {
-                    ctx.pending_cell_px = info.cell_px;
-                    ctx.terminal_info = Some(info);
-                    ctx.image_caps = caps;
-                });
+                self.pending_cell_px = info.cell_size;
+                self.runtime_info = Some(info);
+                self.image_caps = caps;
             }
 
             let wake_fd = init_waker()?;
@@ -1519,12 +1484,8 @@ impl Runtime {
             reader.set_wake_fd(wake_fd);
             EVENT_READER.with_borrow_mut(|r| *r = Some(reader));
             let _ = signals::install(waker_write());
-        } else {
-            with_ctx_mut(|ctx| {
-                if let Some(info) = ctx.terminal_info.as_mut() {
-                    info.size = initial_size;
-                }
-            });
+        } else if let Some(info) = self.runtime_info.as_mut() {
+            info.size = initial_size;
         }
 
         self.buf.clear();
@@ -1536,12 +1497,11 @@ impl Runtime {
             output::enable_mouse_hover_events(&mut self.buf);
         }
         output::enable_sgr_mouse(&mut self.buf);
-        let pixel_mouse = with_ctx(|ctx| {
-            ctx.terminal_info
-                .as_ref()
-                .map(|i| i.mouse_pixel_capture)
-                .unwrap_or(false)
-        });
+        let pixel_mouse = self
+            .runtime_info
+            .as_ref()
+            .map(|i| i.subcell_events)
+            .unwrap_or(false);
         if pixel_mouse {
             output::enable_mouse_pixel_capture(&mut self.buf);
             set_mouse_pixel_dpr(self.mouse_pixel_dpr);
@@ -1559,7 +1519,7 @@ impl Runtime {
 
         self.cursor_visible = true;
 
-        dirty_layout();
+        self.dirty |= DirtyImpact::Layout;
 
         self.buffer.write_all(self.buf.as_bytes())?;
         self.buffer.flush()?;
@@ -1567,7 +1527,7 @@ impl Runtime {
     }
 
     fn disable(&mut self) -> std::io::Result<()> {
-        match with_ctx(|c| c.mode) {
+        match self.mode {
             Mode::Tui => self.disable_terminal(),
             #[cfg(feature = "gui")]
             Mode::Gui => {
@@ -1595,8 +1555,10 @@ impl Runtime {
         self.cursor_visible = true;
         output::leave_alternate_screen(&mut self.buf);
         output::pop_keyboard_enhancement_flags(&mut self.buf);
-        let pixel_mouse = RUNTIME_CTX
-            .try_with(|ctx| ctx.borrow().terminal_info.as_ref().map(|i| i.mouse_pixel_capture).unwrap_or(false))
+        let pixel_mouse = self
+            .runtime_info
+            .as_ref()
+            .map(|i| i.subcell_events)
             .unwrap_or(false);
         if pixel_mouse {
             output::disable_mouse_pixel_capture(&mut self.buf);
@@ -1628,7 +1590,9 @@ impl Runtime {
         }
         Ok(())
     }
+}
 
+impl Runtime {
     fn focused_widget_id(&self) -> Option<WidgetId> {
         self.focus_chain.last().copied()
     }
@@ -1696,43 +1660,37 @@ impl Runtime {
         }
     }
 
-    fn handle_hover(
-        &mut self,
-        root: &mut dyn Widget,
-        mouse_pos: Vec2<i32>,
-        mouse_subpx: Vec2<i32>,
-        release: bool,
-    ) {
-        let cell_px = crate::runtime::tree::cell_px();
-        let pos_f = crate::runtime::tree::pos_with_subpx(mouse_pos, mouse_subpx, cell_px);
+    fn handle_hover(&mut self, root: &mut dyn Widget, pos: Vec2<f32>, release: bool) {
         let mut new_path: Vec<WidgetId> = vec![];
-        let new_id = match self.popup_hit_test(mouse_pos) {
-            PopupHitResult::Hit(i) => {
-                let id = self.popups[i].content.descendant_at_pos(pos_f, Some(&mut new_path));
-                if id.is_some() {
-                    new_path.push(self.popups[i].content.get_id());
-                    new_path.reverse();
+        let new_id = if pos.x < 0.0 {
+            None
+        } else {
+            let cell = pos.map(|v| v.floor() as i32);
+            match self.popup_hit_test(cell) {
+                PopupHitResult::Hit(i) => {
+                    let id = self.popups[i].content.descendant_at_pos(pos, Some(&mut new_path));
+                    if id.is_some() {
+                        new_path.push(self.popups[i].content.get_id());
+                        new_path.reverse();
+                    }
+                    id
                 }
-                id
-            }
-            PopupHitResult::Blocked => None,
-            PopupHitResult::Miss => {
-                let mut _shifts: Vec<Vec2<i32>> = Vec::new();
-                let hit = hit_test_z(root, pos_f, &mut new_path, &mut _shifts, &[]);
-                if hit.is_some() {
-                    new_path.push(root.get_id());
-                    new_path.reverse();
+                PopupHitResult::Blocked => None,
+                PopupHitResult::Miss => {
+                    let hit = hit_test_z(root, pos, &mut new_path, &[]);
+                    if hit.is_some() {
+                        new_path.push(root.get_id());
+                        new_path.reverse();
+                    }
+                    hit.map(|(id, _z)| id)
                 }
-                hit.map(|(id, _z)| id)
             }
         };
 
         let old_id = self.mouse_path.last().copied();
         if old_id == new_id {
-            if release {
-                if let Some(wid) = old_id {
-                    self.set_widget_hover_by_id(root, wid, true);
-                }
+            if release && let Some(wid) = old_id {
+                self.set_widget_hover_by_id(root, wid, true);
             }
             return;
         }
@@ -1768,7 +1726,7 @@ impl Runtime {
         };
         self.get_valid_prefix_len(root, path) == path.len()
             && self.find_root_for_path(root, path)
-                .find(last).map_or(false, |w| w.is_focusable())
+                .find(last).is_some_and(|w| w.is_focusable())
     }
 
     #[cfg(debug_assertions)]
@@ -1823,11 +1781,15 @@ impl Runtime {
         root
     }
 
-    fn find_root_for_path_mut<'a>(&'a mut self, root: &'a mut dyn Widget, path: &[WidgetId]) -> &'a mut dyn Widget {
-        if let Some(&first) = path.first() {
-            if let Some(popup) = self.popups.iter_mut().find(|p| p.content.get_id() == first) {
-                return &mut *popup.content;
-            }
+    fn find_root_for_path_mut<'a>(
+        &'a mut self,
+        root: &'a mut dyn Widget,
+        path: &[WidgetId],
+    ) -> &'a mut dyn Widget {
+        if let Some(&first) = path.first()
+            && let Some(popup) = self.popups.iter_mut().find(|p| p.content.get_id() == first)
+        {
+            return &mut *popup.content;
         }
         root
     }
@@ -1898,7 +1860,7 @@ impl Runtime {
     }
 
     fn focus_first_widget(&mut self, root: &mut dyn Widget) {
-        let terminal_size = get_terminal_info().map(|i| i.size).unwrap_or(Vec2::of(0));
+        let terminal_size = get_runtime_info().size;
         let clip = Axis2D::map(|a| (0, terminal_size[a] as i32));
 
         let mut id = {
@@ -1988,12 +1950,12 @@ impl Runtime {
             } else {
                 self.curswant = center;
             }
-            if let Some(resolved_id) = resolved {
-                if resolved_id != widget_id {
-                    self.process_focus_request(root, resolved_id, false);
-                    reveal(resolved_id, Vec2 { x: None, y: None });
-                    return;
-                }
+            if let Some(resolved_id) = resolved
+                && resolved_id != widget_id
+            {
+                self.process_focus_request(root, resolved_id, false);
+                reveal(resolved_id, Vec2 { x: None, y: None });
+                return;
             }
             self.update_focus_chain(root, path);
             dirty_paint();
@@ -2016,11 +1978,11 @@ impl Runtime {
             RuntimeEvent::Focus(focused) => {
                 if !focused {
                     self.clear_key_queue();
-                    self.handle_hover(root, Vec2::of(-1), Vec2::of(-1), false);
+                    self.handle_hover(root, Vec2::of(-1.0), false);
                 }
             }
             RuntimeEvent::Input(mut event) => {
-                self.mouse_pos = event.mouse_pos;
+                self.mouse_pos = event.pos;
                 if event.is_mouse_event() {
                     let mut early_exit = false;
                     match &event.chord.trigger {
@@ -2041,21 +2003,20 @@ impl Runtime {
                             let was_dragging = self.dragging;
                             self.dragging = false;
 
-                            if was_dragging {
-                                if !self.mouse_path.is_empty() {
+                            if was_dragging
+                                && !self.mouse_path.is_empty() {
                                     let path = self.mouse_path.clone();
                                     self.dispatch_mouse(root, &path, &mut event);
                                 }
-                            }
 
                             if let Some(select_id) = take_focus_request() {
                                 self.process_focus_request(root, select_id, false);
                             }
 
-                            self.handle_hover(root, event.mouse_pos, event.mouse_window_subpx, true);
+                            self.handle_hover(root, event.pos, true);
                         }
                         Trigger::MouseHover => {
-                            self.handle_hover(root, event.mouse_pos, event.mouse_window_subpx, false);
+                            self.handle_hover(root, event.pos, false);
                             if !self.mouse_path.is_empty() {
                                 let path = self.mouse_path.clone();
                                 self.dispatch_mouse(root, &path, &mut event);
@@ -2090,9 +2051,7 @@ impl Runtime {
                                     );
                                     let mut synth = InputEvent {
                                         chord: Chord::new(Trigger::MouseScroll(synth_dir), event.chord.modifiers),
-                                        mouse_pos: event.mouse_window_pos,
-                                        mouse_window_pos: event.mouse_window_pos,
-                                        mouse_window_subpx: event.mouse_window_subpx,
+                                        pos: event.pos,
                                         count: 1,
                                     };
                                     if self.handle_popup_scroll(root, &mut synth, synth_dir).is_none() {
@@ -2113,22 +2072,17 @@ impl Runtime {
                 }
             }
             RuntimeEvent::ColorSchemeChange(scheme) => {
-                update_terminal_info(|info| info.color_scheme = Some(scheme));
+                update_runtime_info(|info| info.color_scheme = Some(scheme));
                 #[cfg(feature = "harmonious")]
                 {
-                    match crate::theme::harmonious::query_palette() {
-                        Ok(p) => crate::theme::harmonious::apply_palette(p),
-                        Err(_) => {}
-                    }
+                    if let Ok(p) = crate::theme::harmonious::query_palette() { crate::theme::harmonious::apply_palette(p) }
                 }
                 dirty_paint();
             }
             RuntimeEvent::Paste(s) => {
                 let event = InputEvent {
                     chord: Chord::new(Trigger::Paste(s), Modifiers::new()),
-                    mouse_pos: self.mouse_pos,
-                    mouse_window_pos: self.mouse_pos,
-                    mouse_window_subpx: Vec2::of(-1),
+                    pos: self.mouse_pos,
                     count: 1,
                 };
                 self.enqueue_keyboard(event);
@@ -2165,8 +2119,8 @@ impl Runtime {
     fn dispatch_click(&mut self, root: &mut dyn Widget, popup_index: Option<usize>, event: &mut InputEvent, selectable: bool) {
         self.dragging = true;
         self.scroll_path.clear();
+        let window_pos = event.pos;
         let mut click_path: Vec<WidgetId> = vec![];
-        let mut click_shifts: Vec<Vec2<i32>> = vec![];
         let mut consumed_idx: Option<usize> = None;
         let mut excluded: Vec<WidgetId> = vec![];
 
@@ -2174,51 +2128,41 @@ impl Runtime {
             let mut found_hit = false;
             let mut hit_z: Option<Layer> = None;
             click_path.clear();
-            click_shifts.clear();
             {
                 let click_root: &dyn Widget = match popup_index {
                     Some(i) => &*self.popups[i].content,
                     None => root as &dyn Widget,
                 };
-                let cell_px = crate::runtime::tree::cell_px();
-                let pos_f = crate::runtime::tree::pos_with_subpx(
-                    event.mouse_pos, event.mouse_window_subpx, cell_px,
-                );
                 match popup_index {
                     Some(_) => {
                         if click_root.descendant_at_pos(
-                            pos_f,
+                            window_pos,
                             Some(&mut click_path),
                         ).is_some() {
                             found_hit = true;
                         }
                     }
                     None => {
-                        if let Some((_, z)) = hit_test_z(click_root, pos_f, &mut click_path, &mut click_shifts, &excluded) {
+                        if let Some((_, z)) = hit_test_z(click_root, window_pos, &mut click_path, &excluded) {
                             hit_z = Some(z);
                             found_hit = true;
                         }
                     }
                 }
                 click_path.push(click_root.get_id());
-                click_shifts.push(Vec2::of(0i32));
             }
             click_path.reverse();
-            click_shifts.reverse();
 
-            let original_subpx = event.mouse_window_subpx;
             for i in (0..click_path.len()).rev() {
                 let click_root: &mut dyn Widget = match popup_index {
                     Some(pi) => &mut *self.popups[pi].content,
                     None => root,
                 };
-                let shift = click_shifts.get(i).copied().unwrap_or_else(|| Vec2::of(0i32));
-                let (_, leaf_subpx) = crate::runtime::tree::window_to_leaf(
-                    &*click_root, &click_path[..=i], event.mouse_window_pos, original_subpx,
+                let leaf_pos = crate::runtime::tree::window_to_leaf(
+                    &*click_root, &click_path[..=i], window_pos,
                 );
                 let result = if let Some(target) = walk_path_mut(click_root, &click_path[..=i]) {
-                    event.mouse_pos = event.mouse_window_pos + shift - target.get_pos();
-                    event.mouse_window_subpx = leaf_subpx;
+                    event.pos = leaf_pos - target.get_pos().map(|v| v as f32);
                     let mut queue = InputQueue::new(std::slice::from_ref(&*event), false);
                     target.on_input(&mut queue)
                 } else {
@@ -2230,6 +2174,7 @@ impl Runtime {
                     break;
                 }
             }
+            event.pos = window_pos;
 
             if consumed_idx.is_some() {
                 break;
@@ -2240,7 +2185,7 @@ impl Runtime {
             if !found_hit {
                 break;
             }
-            if hit_z.map_or(false, |z| z > Layer::Bottom) {
+            if hit_z.is_some_and(|z| z > Layer::Bottom) {
                 break;
             }
 
@@ -2266,7 +2211,7 @@ impl Runtime {
                     Some(i) => &*self.popups[i].content,
                     None => root as &dyn Widget,
                 };
-                Self::click_inside_widget_border(click_root, select_id, event.mouse_window_pos)
+                Self::click_inside_widget_border(click_root, select_id, window_pos.map(|v| v.floor() as i32))
             };
             self.process_focus_request(root, select_id, active);
         } else {
@@ -2277,7 +2222,7 @@ impl Runtime {
             let mut found = false;
             for &wid in click_path.iter().rev() {
                 if let Some(resolved_id) = click_root.find(wid).and_then(|w| w.get_focus_target()) {
-                    let active = Self::click_inside_widget_border(click_root, resolved_id, event.mouse_window_pos);
+                    let active = Self::click_inside_widget_border(click_root, resolved_id, window_pos.map(|v| v.floor() as i32));
                     self.process_focus_request(root, resolved_id, active);
                     found = true;
                     break;
@@ -2290,7 +2235,12 @@ impl Runtime {
         }
     }
 
-    fn handle_scroll(&mut self, root: &mut dyn Widget, event: &mut InputEvent, direction: Direction2D) -> InputResult {
+    fn handle_scroll(
+        &mut self,
+        root: &mut dyn Widget,
+        event: &mut InputEvent,
+        direction: Direction2D,
+    ) -> InputResult {
         let (edge_window, alive_window) = match with_ctx(|c| c.mode) {
             Mode::Gui => (
                 std::time::Duration::from_millis(100),
@@ -2304,14 +2254,17 @@ impl Runtime {
 
         let now = std::time::Instant::now();
         let elapsed = now.duration_since(self.last_scroll);
-        let near_prev = event.mouse_pos.diff(self.scroll_pos).all_le(Vec2::new(2, 1));
+        let near_prev = event
+            .pos
+            .diff(self.scroll_pos)
+            .all_le(Vec2::new(2.0_f32, 1.0_f32));
 
-        if near_prev {
-            if let Some(&scroll_wid) = self.scroll_path.last() {
-                let can_scroll = root.find(scroll_wid).map_or(false, |w| w.can_scroll(direction));
-                let alive = self.scroll_held
-                    || elapsed < edge_window
-                    || (can_scroll && elapsed < alive_window);
+        if near_prev && let Some(&scroll_wid) = self.scroll_path.last() {
+            let can_scroll = root
+                .find(scroll_wid)
+                .is_some_and(|w| w.can_scroll(direction));
+            let alive =
+                self.scroll_held || elapsed < edge_window || (can_scroll && elapsed < alive_window);
                 if alive {
                     let result = if can_scroll {
                         let path = self.scroll_path.clone();
@@ -2323,14 +2276,9 @@ impl Runtime {
                     return result;
                 }
             }
-        }
 
-        self.scroll_pos = event.mouse_pos;
-        let cell_px = crate::runtime::tree::cell_px();
-        let pos_f = crate::runtime::tree::pos_with_subpx(
-            event.mouse_pos, event.mouse_window_subpx, cell_px,
-        );
-        self.scroll_path = build_scroll_path(root, pos_f, direction);
+        self.scroll_pos = event.pos;
+        self.scroll_path = build_scroll_path(root, event.pos, direction);
         if !self.scroll_path.is_empty() {
             let path = self.scroll_path.clone();
             let result = self.dispatch_mouse(root, &path, event);
@@ -2345,19 +2293,18 @@ impl Runtime {
         if path.is_empty() {
             return InputResult::Rejected;
         }
+        let window_pos = event.pos;
         let dispatch_root = self.find_root_for_path_mut(root, path);
-        let (leaf_cell, leaf_subpx) = crate::runtime::tree::window_to_leaf(
-            &*dispatch_root, path, event.mouse_window_pos, event.mouse_window_subpx,
-        );
-        event.mouse_window_subpx = leaf_subpx;
+        let leaf_pos = crate::runtime::tree::window_to_leaf(&*dispatch_root, path, window_pos);
         let result = match walk_path_mut(dispatch_root, path) {
             Some(target) => {
-                event.mouse_pos = leaf_cell - target.get_pos();
+                event.pos = leaf_pos - target.get_pos().map(|v| v as f32);
                 let mut queue = InputQueue::new(std::slice::from_ref(&*event), false);
                 target.on_input(&mut queue)
             }
             None => InputResult::Rejected,
         };
+        event.pos = window_pos;
         self.flush_events(root);
         result
     }
@@ -2390,11 +2337,11 @@ impl Runtime {
                 let widget_path = WidgetPath::from_ids(ancestors_ids);
                 let mut event = WidgetEvent::new(source_id, emitted.payload);
 
-                if let Some(&first) = widget_path.as_slice().first() {
-                    if let Some(popup) = self.popups.iter_mut().find(|p| p.content.get_id() == first) {
-                        widget_path.emit_event(&mut *popup.content, &mut event);
-                        continue;
-                    }
+                if let Some(&first) = widget_path.as_slice().first()
+                    && let Some(popup) = self.popups.iter_mut().find(|p| p.content.get_id() == first)
+                {
+                    widget_path.emit_event(&mut *popup.content, &mut event);
+                    continue;
                 }
                 widget_path.emit_event(root, &mut event);
             }
@@ -2487,8 +2434,8 @@ impl Runtime {
         }
 
         if !self.is_focus_chain_valid(&*root) {
-            let target = if self.mouse_pos.x >= 0 {
-                self.mouse_pos
+            let target = if self.mouse_pos.x >= 0.0 {
+                self.mouse_pos.map(|v| v.floor() as i32)
             } else if let Some(selected_id) = self.focused_widget_id() {
                 rect_center(widget_rect_or_zero(self.get_active_root(&*root), selected_id))
             } else {
@@ -2514,7 +2461,7 @@ impl Runtime {
 
     fn handle_reveal_request(&mut self, root: &mut dyn Widget) {
         if let Some(focus_id) = with_ctx_mut(|ctx| ctx.reveal_request.take()) {
-            let scroll = with_ctx_mut(|ctx| {
+            let align = with_ctx_mut(|ctx| {
                 std::mem::replace(&mut ctx.reveal_align, Vec2 { x: None, y: None })
             });
             let in_selected = self.focus_chain.contains(&focus_id);
@@ -2524,7 +2471,7 @@ impl Runtime {
                 root.find_path(focus_id).unwrap_or_else(|| self.focus_chain.clone())
             };
             let focus_root = self.find_root_for_path_mut(root, &path);
-            focus_along_path(focus_root, &path, scroll);
+            focus_along_path(focus_root, &path, align);
         }
     }
 
@@ -2538,7 +2485,7 @@ impl Runtime {
     }
 
     fn layout_and_render(&mut self, root: &mut dyn Widget) -> std::io::Result<FrameRender> {
-        let terminal_size = get_terminal_info().map(|i| i.size).unwrap_or(Vec2::of(0));
+        let terminal_size = get_runtime_info().size;
         if terminal_size != root.get_rect_size() {
             dirty_layout();
         }
@@ -2555,7 +2502,7 @@ impl Runtime {
             clear_path_cache();
         }
 
-        self.renderer.resize(terminal_size);
+        with_ctx_mut(|ctx| ctx.renderer.resize(terminal_size));
 
         self.flush_events(root);
 
@@ -2603,7 +2550,7 @@ impl Runtime {
         }
 
         if !self.dragging {
-            self.handle_hover(root, self.mouse_pos, Vec2::of(-1), false);
+            self.handle_hover(root, self.mouse_pos, false);
         }
 
         let cursor = self.compute_cursor(root, terminal_size);
@@ -2614,13 +2561,13 @@ impl Runtime {
     #[cfg(feature = "gui")]
     fn present_gui(&mut self, root: &dyn Widget, cursor: Option<(CursorShape, Vec2<i32>)>) {
         let cursor_subpixel = match cursor {
-            Some((_, pos)) => path_subcell_offset(root, &self.focus_chain, pos),
+            Some(_) => path_subcell_offset(root, &self.focus_chain),
             None => Vec2::of(0i32),
         };
-        let renderer = &mut self.renderer;
-        let buffer = &mut self.buffer;
         let focus_chain = &self.focus_chain;
-        try_with_gui_state(|s| s.present(renderer, cursor, cursor_subpixel, focus_chain, buffer));
+        with_render_io(|renderer, buffer, _buf| {
+            try_with_gui_state(|s| s.present(renderer, cursor, cursor_subpixel, focus_chain, buffer));
+        });
     }
 
     fn layout(&mut self, root: &mut dyn Widget, viewport_size: Vec2<u16>) {
@@ -2658,8 +2605,12 @@ impl Runtime {
         root: &dyn Widget,
         terminal_size: Vec2<u16>,
     ) -> Option<(CursorShape, Vec2<i32>)> {
-        let (shape, cursor_pos) = root.get_cursor(self.focused_widget_id())?;
-        let pos = cursor_pos + root.get_pos();
+        let active_root = self.get_active_root(root);
+        let selected = self
+            .focused_widget_id()
+            .filter(|&id| id != active_root.get_id());
+        let (shape, cursor_pos) = active_root.get_cursor(selected)?;
+        let pos = cursor_pos + active_root.get_pos();
         let in_bounds = Axis2D::all(|a| {
             pos[a] >= -1 && pos[a] <= terminal_size[a] as i32
         });
@@ -2690,33 +2641,36 @@ impl Runtime {
         root: &dyn Widget,
         _cursor: Option<(CursorShape, Vec2<i32>)>,
     ) -> std::io::Result<()> {
-        let _ = self.renderer.take_full_dirty();
         let (grid_origin_px, window_px) = try_with_gui_state(|s| {
             let o = s.grid_origin();
             (Vec2::new(o.x as i32, o.y as i32), s.pixel_size)
         })
         .unwrap_or((Vec2::of(0i32), Vec2::of(0u32)));
-        self.renderer.set_root_screen_pos_px(grid_origin_px);
-        if let Some(cell_px) = get_terminal_info().and_then(|i| i.cell_px) {
-            let size = self.renderer.gui_size();
-            let grid_size_px = Vec2::new(
-                size.x as u32 * cell_px.x as u32,
-                size.y as u32 * cell_px.y as u32,
-            );
-            let root_clip_size = Vec2::new(
-                grid_size_px
-                    .x
-                    .max(window_px.x.saturating_sub(grid_origin_px.x.max(0) as u32)),
-                grid_size_px
-                    .y
-                    .max(window_px.y.saturating_sub(grid_origin_px.y.max(0) as u32)),
-            );
-            self.renderer
-                .set_root_clip_screen_px((grid_origin_px, root_clip_size));
-        }
-        self.renderer.clear_defer_queue();
-        self.renderer.render_to_queue(root, Vec2::of(0i32), &mut self.buffer);
-        seed_popup_queue(&mut self.renderer, &mut self.buffer, &self.popups);
+        let cell_size = get_runtime_info().cell_size;
+        let popups = &self.popups;
+        with_render_io(|renderer, buffer, _buf| {
+            let _ = renderer.take_full_dirty();
+            renderer.set_root_screen_pos_px(grid_origin_px);
+            if let Some(cell_px) = cell_size {
+                let size = renderer.gui_size();
+                let grid_size_px = Vec2::new(
+                    size.x as u32 * cell_px.x as u32,
+                    size.y as u32 * cell_px.y as u32,
+                );
+                let root_clip_size = Vec2::new(
+                    grid_size_px
+                        .x
+                        .max(window_px.x.saturating_sub(grid_origin_px.x.max(0) as u32)),
+                    grid_size_px
+                        .y
+                        .max(window_px.y.saturating_sub(grid_origin_px.y.max(0) as u32)),
+                );
+                renderer.set_root_clip_screen_px((grid_origin_px, root_clip_size));
+            }
+            renderer.clear_defer_queue();
+            renderer.render_to_queue(root, Vec2::of(0i32), buffer);
+            seed_popup_queue(renderer, buffer, popups);
+        });
         Ok(())
     }
 
@@ -2725,49 +2679,58 @@ impl Runtime {
         root: &dyn Widget,
         cursor: Option<(CursorShape, Vec2<i32>)>,
     ) -> std::io::Result<()> {
-        self.buf.clear();
-        output::begin_synchronized_update(&mut self.buf);
-        if self.renderer.take_full_dirty() {
-            output::clear_screen(&mut self.buf);
-        }
-        self.buffer.write_all(self.buf.as_bytes())?;
-        self.renderer.clear_defer_queue();
-        self.renderer.render_to_queue(root, Vec2::of(0i32), &mut self.buffer);
-        seed_popup_queue(&mut self.renderer, &mut self.buffer, &self.popups);
-        self.renderer.drain_queue(&mut self.buffer);
-        self.renderer.flush(&mut self.buffer)?;
-
-        self.buf.clear();
-        output::end_synchronized_update(&mut self.buf);
-
-        let mut cursor_visible = false;
-        let term_size = get_terminal_info().map(|i| i.size).unwrap_or(Vec2::of(0u16));
-        let in_grid = |pos: Vec2<i32>| {
-            pos.x >= 0
-                && pos.y >= 0
-                && pos.x < term_size.x as i32
-                && pos.y < term_size.y as i32
-        };
-        if let Some((shape, pos)) = cursor.filter(|(_, p)| in_grid(*p)) {
-            output::move_to(&mut self.buf, pos.x as u16, pos.y as u16);
-            cursor_visible = true;
-            if !self.cursor_visible {
-                self.cursor_visible = true;
-                output::show_cursor(&mut self.buf);
+        let term_size = get_runtime_info().size;
+        let popups = &self.popups;
+        with_render_io(|renderer, buffer, buf| {
+            buf.clear();
+            output::begin_synchronized_update(buf);
+            if renderer.take_full_dirty() {
+                output::clear_screen(buf);
             }
-            output::set_cursor_style(&mut self.buf, shape, config::get().cursor_blink);
-        }
+            buffer.write_all(buf.as_bytes())?;
+            renderer.clear_defer_queue();
+            renderer.render_to_queue(root, Vec2::of(0i32), buffer);
+            seed_popup_queue(renderer, buffer, popups);
+            renderer.drain_queue(buffer);
+            renderer.flush(buffer)?;
 
-        if !cursor_visible {
-            output::move_to(&mut self.buf, 0, 0);
-            if self.cursor_visible {
-                self.cursor_visible = false;
-                output::hide_cursor(&mut self.buf);
+            buf.clear();
+            output::end_synchronized_update(buf);
+
+            let mut was_visible = with_ctx(|ctx| ctx.cursor_visible);
+            let mut cursor_visible = false;
+            let in_grid = |pos: Vec2<i32>| {
+                pos.x >= 0
+                    && pos.y >= 0
+                    && pos.x < term_size.x as i32
+                    && pos.y < term_size.y as i32
+            };
+            let visible_cursor = cursor.filter(|(_, p)| in_grid(*p));
+            if let Some((shape, pos)) = visible_cursor {
+                output::move_to(buf, pos.x as u16, pos.y as u16);
+                cursor_visible = true;
+                if !was_visible {
+                    was_visible = true;
+                    output::show_cursor(buf);
+                }
+                output::set_cursor_style(buf, shape, config::get().cursor_blink);
             }
-        }
-        self.buffer.write_all(self.buf.as_bytes())?;
-        self.buffer.flush()?;
-        Ok(())
+
+            if !cursor_visible {
+                output::move_to(buf, 0, 0);
+                if was_visible {
+                    was_visible = false;
+                    output::hide_cursor(buf);
+                }
+            }
+            with_ctx_mut(|ctx| {
+                ctx.cursor_visible = was_visible;
+                ctx.emulator_cursor = visible_cursor;
+            });
+            buffer.write_all(buf.as_bytes())?;
+            buffer.flush()?;
+            Ok(())
+        })
     }
 
     fn drain_popup_queues(&mut self, root: &mut dyn Widget) {
@@ -2797,13 +2760,9 @@ impl Runtime {
         if self.popups.is_empty() {
             return None;
         }
-        match self.popup_hit_test(event.mouse_pos) {
+        match self.popup_hit_test(event.cell()) {
             PopupHitResult::Hit(i) => {
-                let cell_px = crate::runtime::tree::cell_px();
-                let pos_f = crate::runtime::tree::pos_with_subpx(
-                    event.mouse_pos, event.mouse_window_subpx, cell_px,
-                );
-                let path = build_scroll_path(&*self.popups[i].content, pos_f, direction);
+                let path = build_scroll_path(&*self.popups[i].content, event.pos, direction);
                 let result = if !path.is_empty() {
                     self.dispatch_mouse(root, &path, event)
                 } else {
@@ -2821,7 +2780,7 @@ impl Runtime {
             return false;
         }
 
-        if let PopupHitResult::Hit(i) = self.popup_hit_test(event.mouse_pos) {
+        if let PopupHitResult::Hit(i) = self.popup_hit_test(event.cell()) {
             self.dispatch_click(root, Some(i), event, true);
             self.drain_popup_queues(root);
             return true;
@@ -2854,4 +2813,3 @@ fn seed_popup_queue(
         ctx.queue_popup(&*popup.content, pos);
     }
 }
-

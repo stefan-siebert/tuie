@@ -308,12 +308,14 @@ impl Backend {
     }
 
     fn add_bg(&mut self, cell_x: u16, cell_y: u16, span: u16, rgba: [u8; 4]) {
-        if let Some(run) = self.pending_bg.as_mut() {
-            if run.y == cell_y && run.end_x == cell_x && run.rgba == rgba {
-                run.end_x = run.end_x.saturating_add(span);
-                run.merged = true;
-                return;
-            }
+        if let Some(run) = self.pending_bg.as_mut()
+            && run.y == cell_y
+            && run.end_x == cell_x
+            && run.rgba == rgba
+        {
+            run.end_x = run.end_x.saturating_add(span);
+            run.merged = true;
+            return;
         }
         self.flush_bg();
         self.pending_bg = Some(BgRun {

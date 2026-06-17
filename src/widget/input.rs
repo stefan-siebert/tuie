@@ -4,13 +4,10 @@ use crate::prelude::*;
 
 /// Single input event with mouse position, [`Chord`], and repeat count.
 #[derive(Clone, PartialEq)]
+#[non_exhaustive]
 pub struct InputEvent {
-    /// Mouse position in window coordinates at the time of the event.
-    pub mouse_window_pos: Vec2<i32>,
-    /// Sub-pixel position within the cell at `mouse_window_pos`.
-    pub mouse_window_subpx: Vec2<i32>,
-    /// Mouse position in the receiving widget's local coordinates.
-    pub mouse_pos: Vec2<i32>,
+    /// Mouse position as leaf-local cell plus sub-cell fraction.
+    pub pos: Vec2<f32>,
     /// Key or mouse [`Chord`] that triggered the event.
     pub chord: Chord,
     /// Repeat count. One for the first press, increasing on subsequent repeats.
@@ -26,24 +23,26 @@ impl std::fmt::Display for InputEvent {
 impl InputEvent {
     /// Builds a synthetic event from `chord` with no mouse info.
     pub fn from_chord(chord: Chord) -> Self {
-        let pos = Vec2::of(-1);
         Self {
             chord,
-            mouse_pos: pos,
-            mouse_window_pos: pos,
-            mouse_window_subpx: Vec2::of(-1),
+            pos: Vec2::of(-1.0),
             count: 1,
         }
     }
 
+    /// Returns the cell containing [`pos`](Self::pos).
+    pub fn cell(&self) -> Vec2<i32> {
+        self.pos.map(|v| v.floor() as i32)
+    }
+
     /// Returns `count` mapped onto the cycle `1..=max`, repeating after `max` clicks.
-    pub fn get_click_cycle(&self, max: u8) -> u8 {
+    pub fn click_cycle(&self, max: u8) -> u8 {
         1 + (self.count.saturating_sub(1)) % max
     }
 
-    /// Returns true when [`get_click_cycle`](Self::get_click_cycle) lands on `n`.
+    /// Returns true when [`click_cycle`](Self::click_cycle) lands on `n`.
     pub fn is_cycle(&self, n: u8, max: u8) -> bool {
-        self.get_click_cycle(max) == n
+        self.click_cycle(max) == n
     }
 
     /// Returns true when the [`Chord`] is any mouse trigger.
@@ -143,7 +142,7 @@ impl<'a> InputQueue<'a> {
     }
 
     /// Returns the number of events consumed so far.
-    pub fn get_consumed(&self) -> usize {
+    pub fn get_consumed_count(&self) -> usize {
         self.pos
     }
 

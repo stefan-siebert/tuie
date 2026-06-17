@@ -123,6 +123,7 @@ fn find_matching_bracket<C: Cursor>(cursor: &mut C, text: &C::Text) -> bool {
 
 /// Editing mode of a [`ViBindings`] instance.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[non_exhaustive]
 pub enum ViMode {
     /// Normal command mode.
     Normal,
@@ -140,7 +141,7 @@ pub enum ViMode {
 
 /// Pending operator applied to the next motion or text object.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum ViOperator {
+enum ViOperator {
     /// Deletes the operated range.
     Delete,
     /// Yanks the operated range to the clipboard.
@@ -162,94 +163,134 @@ struct SharedViState {
     last_find: Option<ViFindState>,
     insert_entry_pos: Option<usize>,
     replaying: bool,
-    normal_maps: Vec<(Vec<Chord>, Vec<Chord>)>,
-    operator_maps: Vec<(Vec<Chord>, Vec<Chord>)>,
-    visual_maps: Vec<(Vec<Chord>, Vec<Chord>)>,
-    insert_maps: Vec<(Vec<Chord>, Vec<Chord>)>,
-    replace_maps: Vec<(Vec<Chord>, Vec<Chord>)>,
-    cursor_shapes: [CursorShape; 6],
-}
-
-impl ViMode {
-    const fn default_cursor_shape(self) -> CursorShape {
-        match self {
-            ViMode::Normal | ViMode::Visual | ViMode::VisualLine | ViMode::Operator => CursorShape::Block,
-            ViMode::Insert => CursorShape::Beam,
-            ViMode::Replace => CursorShape::Underline,
-        }
-    }
-
-    const fn cursor_shape_idx(self) -> usize {
-        match self {
-            ViMode::Normal => 0,
-            ViMode::Insert => 1,
-            ViMode::Replace => 2,
-            ViMode::Visual => 3,
-            ViMode::VisualLine => 4,
-            ViMode::Operator => 5,
-        }
-    }
 }
 
 thread_local! {
-    static SHARED_VI_STATE: RefCell<SharedViState> = RefCell::new(SharedViState {
+    static SHARED_VI_STATE: RefCell<SharedViState> = const { RefCell::new(SharedViState {
         last_command: Vec::new(),
         last_insert: Vec::new(),
         last_visual: None,
         last_find: None,
         insert_entry_pos: None,
         replaying: false,
-        normal_maps: Vec::new(),
-        operator_maps: Vec::new(),
-        visual_maps: Vec::new(),
-        insert_maps: Vec::new(),
-        replace_maps: Vec::new(),
-        cursor_shapes: [
-            ViMode::Normal.default_cursor_shape(),
-            ViMode::Insert.default_cursor_shape(),
-            ViMode::Replace.default_cursor_shape(),
-            ViMode::Visual.default_cursor_shape(),
-            ViMode::VisualLine.default_cursor_shape(),
-            ViMode::Operator.default_cursor_shape(),
-        ],
-    });
+    }) };
 }
 
-/// Registers a key mapping active in [`ViMode::Normal`].
-pub fn map_normal(lhs: Vec<Chord>, rhs: Vec<Chord>) {
-    SHARED_VI_STATE.with(|shared| shared.borrow_mut().normal_maps.push((lhs, rhs)));
+/// Cursor shape used for each [`ViMode`].
+#[derive(Clone, Copy)]
+#[non_exhaustive]
+pub struct ViCursorShapes {
+    /// Shape shown in [`ViMode::Normal`].
+    pub normal: CursorShape,
+    /// Shape shown in [`ViMode::Insert`].
+    pub insert: CursorShape,
+    /// Shape shown in [`ViMode::Replace`].
+    pub replace: CursorShape,
+    /// Shape shown in [`ViMode::Visual`].
+    pub visual: CursorShape,
+    /// Shape shown in [`ViMode::VisualLine`].
+    pub visual_line: CursorShape,
+    /// Shape shown in [`ViMode::Operator`].
+    pub operator: CursorShape,
 }
 
-/// Registers a key mapping active in [`ViMode::Operator`].
-pub fn map_operator(lhs: Vec<Chord>, rhs: Vec<Chord>) {
-    SHARED_VI_STATE.with(|shared| shared.borrow_mut().operator_maps.push((lhs, rhs)));
+impl ViCursorShapes {
+    fn for_mode(self, mode: ViMode) -> CursorShape {
+        match mode {
+            ViMode::Normal => self.normal,
+            ViMode::Insert => self.insert,
+            ViMode::Replace => self.replace,
+            ViMode::Visual => self.visual,
+            ViMode::VisualLine => self.visual_line,
+            ViMode::Operator => self.operator,
+        }
+    }
 }
 
-/// Registers a key mapping active in [`ViMode::Visual`] and [`ViMode::VisualLine`].
-pub fn map_visual(lhs: Vec<Chord>, rhs: Vec<Chord>) {
-    SHARED_VI_STATE.with(|shared| shared.borrow_mut().visual_maps.push((lhs, rhs)));
+impl Default for ViCursorShapes {
+    fn default() -> Self {
+        Self {
+            normal: CursorShape::Block,
+            insert: CursorShape::Beam,
+            replace: CursorShape::Underline,
+            visual: CursorShape::Block,
+            visual_line: CursorShape::Block,
+            operator: CursorShape::Block,
+        }
+    }
 }
 
-/// Registers a key mapping active in [`ViMode::Insert`].
-pub fn map_insert(lhs: Vec<Chord>, rhs: Vec<Chord>) {
-    SHARED_VI_STATE.with(|shared| shared.borrow_mut().insert_maps.push((lhs, rhs)));
+/// Options for a vi key mapping.
+#[derive(Clone, Copy, Default)]
+#[non_exhaustive]
+pub struct ViMapOpts {}
+
+impl ViMapOpts {
+    /// Creates the default mapping options.
+    pub fn new() -> Self {
+        Self {}
+    }
 }
 
-/// Registers a key mapping active in [`ViMode::Replace`].
-pub fn map_replace(lhs: Vec<Chord>, rhs: Vec<Chord>) {
-    SHARED_VI_STATE.with(|shared| shared.borrow_mut().replace_maps.push((lhs, rhs)));
+#[derive(Clone)]
+pub(crate) struct ViMapping {
+    pub from: Vec<Chord>,
+    pub to: Vec<Chord>,
+    #[allow(dead_code)]
+    pub opts: ViMapOpts,
 }
 
-/// Sets the cursor shape used when the editor is in `mode`.
-pub fn set_cursor_shape(mode: ViMode, shape: CursorShape) {
-    SHARED_VI_STATE.with(|shared| {
-        shared.borrow_mut().cursor_shapes[mode.cursor_shape_idx()] = shape;
-    });
+/// Configuration shared by all [`ViBindings`] instances.
+#[derive(Clone, Default)]
+#[non_exhaustive]
+pub struct ViConfig {
+    pub(crate) normal_maps: Vec<ViMapping>,
+    pub(crate) operator_maps: Vec<ViMapping>,
+    pub(crate) visual_maps: Vec<ViMapping>,
+    pub(crate) insert_maps: Vec<ViMapping>,
+    pub(crate) replace_maps: Vec<ViMapping>,
+    /// Cursor shape used for each mode.
+    pub cursor_shapes: ViCursorShapes,
 }
 
-/// Returns the cursor shape configured for `mode`.
-pub fn get_cursor_shape(mode: ViMode) -> CursorShape {
-    SHARED_VI_STATE.with(|shared| shared.borrow().cursor_shapes[mode.cursor_shape_idx()])
+impl ViConfig {
+    /// Adds a mapping for `mode` that expands `from` into `to`.
+    pub fn map(&mut self, mode: ViMode, from: Vec<Chord>, to: Vec<Chord>, opts: ViMapOpts) {
+        let maps = match mode {
+            ViMode::Normal => &mut self.normal_maps,
+            ViMode::Operator => &mut self.operator_maps,
+            ViMode::Visual | ViMode::VisualLine => &mut self.visual_maps,
+            ViMode::Insert => &mut self.insert_maps,
+            ViMode::Replace => &mut self.replace_maps,
+        };
+        maps.push(ViMapping { from, to, opts });
+    }
+}
+
+/// Process-wide vi binding configuration.
+pub mod config {
+    use super::*;
+
+    thread_local! {
+        static CONFIG: RefCell<ViConfig> = RefCell::new(ViConfig::default());
+    }
+
+    /// Returns a copy of the current configuration.
+    pub fn get() -> ViConfig {
+        CONFIG.with(|c| c.borrow().clone())
+    }
+
+    /// Applies `f` to the configuration in place.
+    pub fn update(f: impl FnOnce(&mut ViConfig)) {
+        let mut cfg = get();
+        f(&mut cfg);
+        CONFIG.with(|c| *c.borrow_mut() = cfg);
+        crate::dirty_layout();
+    }
+
+    pub(super) fn with<R>(f: impl FnOnce(&ViConfig) -> R) -> R {
+        CONFIG.with(|c| f(&c.borrow()))
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -267,7 +308,7 @@ struct ViFindState {
 
 /// How an operator includes the range a motion covers.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Inclusivity {
+enum Inclusivity {
     /// Range stops one short of the motion endpoint.
     Exclusive,
     /// Range includes the grapheme at the motion endpoint.
@@ -334,17 +375,17 @@ impl<T: TextDocument> ViBindings<T> {
 
     fn check_mappings(
         queue: &[InputEvent],
-        maps: &[(Vec<Chord>, Vec<Chord>)],
+        maps: &[ViMapping],
     ) -> Result<Option<Vec<Chord>>, ()> {
         let mut has_prefix = false;
-        for (lhs, rhs) in maps {
-            if lhs.len() == queue.len()
-                && lhs.iter().zip(queue).all(|(l, e)| *l == e.chord)
+        for m in maps {
+            if m.from.len() == queue.len()
+                && m.from.iter().zip(queue).all(|(l, e)| *l == e.chord)
             {
-                return Ok(Some(rhs.clone()));
+                return Ok(Some(m.to.clone()));
             }
-            if lhs.len() > queue.len()
-                && lhs[..queue.len()].iter().zip(queue).all(|(l, e)| *l == e.chord)
+            if m.from.len() > queue.len()
+                && m.from[..queue.len()].iter().zip(queue).all(|(l, e)| *l == e.chord)
             {
                 has_prefix = true;
             }
@@ -392,7 +433,7 @@ impl<T: TextDocument + 'static> ViBindings<T> {
         }
         match op {
             ViOperator::Delete | ViOperator::Change => {
-                state.copy_selection(text);
+                state.copy(text);
                 state.delete_selection(text);
                 if matches!(op, ViOperator::Change) {
                     self.set_mode(state, ViMode::Insert);
@@ -402,7 +443,7 @@ impl<T: TextDocument + 'static> ViBindings<T> {
                 state.update_preferred_col(text);
             }
             ViOperator::Yank => {
-                state.copy_selection(text);
+                state.copy(text);
                 state.anchor = state.cursor.clone();
                 state.update_preferred_col(text);
             }
@@ -445,7 +486,7 @@ impl<T: TextDocument + 'static> ViBindings<T> {
         let clamped_end =
             std::cmp::min(state.anchor.get_index(), text.len());
         let clipboard_text = normalize_line_paste(
-            &text.slice(state.cursor.get_index(), clamped_end),
+            &text.slice(state.cursor.get_index()..clamped_end),
         );
         tuie::clipboard::write(ClipboardItem::Text(clipboard_text));
         let from = state.cursor.clone();
@@ -456,12 +497,12 @@ impl<T: TextDocument + 'static> ViBindings<T> {
                 state.update_preferred_col(text);
             }
             ViOperator::Delete => {
-                state.delete_lines(text, from.get_index(), to.get_index());
+                state.delete_lines(text, from.get_index()..to.get_index());
                 self.clamp_cursor_to_line_end(state, text);
                 state.update_preferred_col(text);
             }
             ViOperator::Change => {
-                state.replace_lines(text, from.get_index(), to.get_index(), "");
+                state.replace_lines(text, from.get_index()..to.get_index(), "");
                 state.update_preferred_col(text);
                 self.set_mode(state, ViMode::Insert);
             }
@@ -487,7 +528,7 @@ impl<T: TextDocument + 'static> ViBindings<T> {
                     } else {
                         paste_text
                     };
-                    state.replace_range(text, next_line_start, next_line_start, &insertion);
+                    state.replace_range(text, next_line_start..next_line_start, &insertion);
                     let offset = if at_eof {
                         1
                     } else {
@@ -498,7 +539,7 @@ impl<T: TextDocument + 'static> ViBindings<T> {
                 Sign::Negative => {
                     let mut probe = state.cursor.clone();
                     let line_start = probe.line_start(text).get_index();
-                    state.replace_range(text, line_start, line_start, &paste_text);
+                    state.replace_range(text, line_start..line_start, &paste_text);
                     state.cursor.set_index(text, line_start);
                 }
             }
@@ -511,7 +552,7 @@ impl<T: TextDocument + 'static> ViBindings<T> {
                 }
                 Sign::Negative => state.cursor.get_index(),
             };
-            state.replace_range(text, start, start, content);
+            state.replace_range(text, start..start, content);
             state.cursor.set_index(text, start + content.len());
             state.cursor.prev_grapheme(text);
         }
@@ -932,7 +973,7 @@ impl<T: TextDocument + 'static> ViBindings<T> {
                     }
                     backslash_count += 1;
                 }
-                if backslash_count % 2 == 0 {
+                if backslash_count.is_multiple_of(2) {
                     quote_positions.push(c.clone());
                 }
             }
@@ -1647,9 +1688,9 @@ impl<T: TextDocument + 'static> ViBindings<T> {
             }
 
             if seg_has_content {
-                for chunk in text.chunks(seg_start, trim_end.get_index())
+                for chunk in text.chunks(seg_start..trim_end.get_index())
                 {
-                    result.push_str(&chunk);
+                    result.push_str(chunk);
                 }
             }
 
@@ -1664,7 +1705,7 @@ impl<T: TextDocument + 'static> ViBindings<T> {
             seg_cursor = nl;
         }
 
-        state.replace_range(text, from, end, &result);
+        state.replace_range(text, from..end, &result);
         state.cursor =
             state.cursor_at_index(text, join_pos.unwrap_or(from));
         state.anchor = state.cursor.clone();
@@ -1680,7 +1721,7 @@ impl<T: TextDocument + 'static> ViBindings<T> {
         }
         let next = c.get_index();
         drop(c);
-        let grapheme = text.slice(state.cursor.get_index(), next);
+        let grapheme = text.slice(state.cursor.get_index()..next);
         let mut toggled = String::with_capacity(grapheme.len());
         for c in grapheme.chars() {
             if c.is_uppercase() {
@@ -1690,7 +1731,7 @@ impl<T: TextDocument + 'static> ViBindings<T> {
             }
         }
         state
-            .replace_range(text, state.cursor.get_index(), next, &toggled);
+            .replace_range(text, state.cursor.get_index()..next, &toggled);
         state.cursor.seek_chars(text, toggled.chars().count() as i64);
         state.anchor = state.cursor.clone();
         state.update_preferred_col(text);
@@ -1753,20 +1794,19 @@ impl<T: TextDocument + 'static> ViBindings<T> {
     }
 
     fn parse_mark_target(
-        &self, state: &EditorState<T>, text: &T,
+        &self,
+        state: &EditorState<T>,
+        text: &T,
         event: &InputEvent,
         queue: &mut InputQueue,
     ) -> Option<(usize, bool)> {
         let linewise = matches!(event.chord, chord!('\''));
         let ev2 = queue.next()?;
-        if let chord!(Char(c)) = ev2.chord {
-            if c.is_ascii_alphabetic() || c == '^' {
-                if let Some(target) =
-                    self.resolve_mark_target(state, text, c as u8, linewise)
-                {
-                    return Some((target, linewise));
-                }
-            }
+        if let chord!(Char(c)) = ev2.chord
+            && (c.is_ascii_alphabetic() || c == '^')
+            && let Some(target) = self.resolve_mark_target(state, text, c as u8, linewise)
+        {
+            return Some((target, linewise));
         }
         None
     }
@@ -1795,21 +1835,19 @@ impl<T: TextDocument + 'static> ViBindings<T> {
         let start = state.cursor.clone();
         let mut c = state.cursor.clone();
         loop {
-            if sign.is_positive() {
-                if c.get_char(text) == '\0' || c.get_char(text).get_class() == CharClass::Whitespace
+            if sign.is_positive()
+                && (c.get_char(text) == '\0' || c.get_char(text).get_class() == CharClass::Whitespace)
                 {
                     break;
                 }
-            }
             if c.clone() == *c.move_grapheme(text, sign) {
                 break;
             }
-            if sign.is_negative() {
-                if c.get_char(text).get_class() == CharClass::Whitespace {
+            if sign.is_negative()
+                && c.get_char(text).get_class() == CharClass::Whitespace {
                     c.next_grapheme(text);
                     break;
                 }
-            }
         }
         state.cursor = c;
         state.cursor != start
@@ -1840,9 +1878,10 @@ impl<T: TextDocument + 'static> ViBindings<T> {
     fn motion_word_end(&mut self, state: &mut EditorState<T>, text: &mut T, count: usize, sign: Sign, big: bool) {
         for _ in 0..count {
             if sign.is_positive() {
-                if !state.cursor.cursor_step(text, Sign::Positive) {
+                if state.cursor.at_eof(text) {
                     return;
                 }
+                state.cursor.move_grapheme(text, Sign::Positive);
                 state.cursor.skip_whitespace(text, Sign::Positive);
                 let moved = if big {
                     self.skip_big_word(state, text, Sign::Positive)
@@ -1866,20 +1905,20 @@ impl<T: TextDocument + 'static> ViBindings<T> {
     }
 
     fn motion_screen_top(&mut self, state: &mut EditorState<T>, text: &mut T, count: usize) {
-        let (top, _) = state.get_visible_region(text);
+        let top = state.get_visible_range(text).start;
         let scrolloff = if top == 0 { 0 } else { tuie::config::get().scrolloff as i32 };
         let y = top + scrolloff + (count - 1) as i32;
         state.cursor = state.cursor_at_pos(text, Vec2::new(0, y));
     }
 
     fn motion_screen_middle(&mut self, state: &mut EditorState<T>, text: &mut T) {
-        let (top, bottom) = state.get_visible_region(text);
+        let range = state.get_visible_range(text);
         state.cursor =
-            state.cursor_at_pos(text, Vec2::new(0, (top + bottom) / 2));
+            state.cursor_at_pos(text, Vec2::new(0, (range.start + range.end) / 2));
     }
 
     fn motion_screen_bottom(&mut self, state: &mut EditorState<T>, text: &mut T, count: usize) {
-        let (_, bottom) = state.get_visible_region(text);
+        let bottom = state.get_visible_range(text).end;
         let at_end = bottom >= text.get_visible_size().y as i32;
         let scrolloff = if at_end { 0 } else { tuie::config::get().scrolloff as i32 };
         let y = bottom - count as i32 - scrolloff;
@@ -1908,8 +1947,8 @@ impl<T: TextDocument + 'static> ViBindings<T> {
     }
 
     fn motion_word_search(&mut self, state: &mut EditorState<T>, text: &mut T, count: usize, sign: Sign) {
-        if let Some((start, end)) = state.cursor.get_word_under_cursor(text) {
-            let word = text.slice(start, end);
+        if let Some(range) = state.cursor.get_word_under_cursor(text) {
+            let word = text.slice(range);
             for _ in 0..count {
                 if !find_word_occurrence(&mut state.cursor, text, &word, sign) {
                     break;
@@ -1970,7 +2009,7 @@ impl<T: TextDocument + 'static> ViBindings<T> {
                 return;
             }
         }
-        state.cursor.move_document_end(text, sign);
+        state.cursor.move_document_edge(text, sign);
     }
 
     fn sentence_boundary(&mut self, state: &mut EditorState<T>, text: &mut T, sign: Sign) {
@@ -2154,7 +2193,7 @@ impl<T: TextDocument + 'static> ViBindings<T> {
     }
 
     fn action_enter_insert_line_end(&mut self, state: &mut EditorState<T>, text: &mut T, sign: Sign) {
-        state.cursor.move_line_end(text, sign);
+        state.cursor.move_line_edge(text, sign);
         state.anchor = state.cursor.clone();
         state.update_preferred_col(text);
         self.set_mode(state, ViMode::Insert);
@@ -2170,12 +2209,12 @@ impl<T: TextDocument + 'static> ViBindings<T> {
     fn action_open_line(&mut self, state: &mut EditorState<T>, text: &mut T, sign: Sign) {
         match sign {
             Sign::Positive => {
-                state.cursor.move_line_end(text, Sign::Positive);
+                state.cursor.move_line_edge(text, Sign::Positive);
                 state.anchor = state.cursor.clone();
                 state.insert_char(text, '\n');
             }
             Sign::Negative => {
-                state.cursor.move_line_end(text, Sign::Negative);
+                state.cursor.move_line_edge(text, Sign::Negative);
                 state.anchor = state.cursor.clone();
                 state.insert_char(text, '\n');
                 state.cursor.prev_grapheme(text);
@@ -2286,7 +2325,7 @@ impl<T: TextDocument + 'static> ViBindings<T> {
                 Ok((Linewise, Column))
             }
             chord!(0) => {
-                state.cursor.move_line_end(text, Sign::Negative);
+                state.cursor.move_line_edge(text, Sign::Negative);
                 Ok((Exclusive, Start))
             }
             chord!('^') => {
@@ -2301,7 +2340,7 @@ impl<T: TextDocument + 'static> ViBindings<T> {
                 Ok((Linewise, Column))
             }
             chord!('$') => {
-                state.cursor.move_line_end(text, Sign::Positive);
+                state.cursor.move_line_edge(text, Sign::Positive);
                 Ok((Inclusive, End))
             }
             chord!('+') | chord!(Enter) => {
@@ -2371,11 +2410,11 @@ impl<T: TextDocument + 'static> ViBindings<T> {
                         Ok((Linewise, Column))
                     }
                     chord!(0) => {
-                        state.move_screen_line_end(text, Sign::Negative);
+                        state.move_screen_line_edge(text, Sign::Negative);
                         Ok((Exclusive, Start))
                     }
                     chord!('$') => {
-                        state.move_screen_line_end(text, Sign::Positive);
+                        state.move_screen_line_edge(text, Sign::Positive);
                         Ok((Inclusive, End))
                     }
                     chord!(e) => {
@@ -2438,7 +2477,7 @@ impl<T: TextDocument + 'static> ViBindings<T> {
 
     fn operator_to_eol(&mut self, state: &mut EditorState<T>, text: &mut T, op: ViOperator) {
         state.anchor = state.cursor.clone();
-        state.cursor.move_line_end(text, Sign::Positive);
+        state.cursor.move_line_edge(text, Sign::Positive);
         std::mem::swap(&mut state.cursor, &mut state.anchor);
         self.apply_operator(state, text, op);
     }
@@ -2573,7 +2612,10 @@ impl<T: TextDocument + 'static> ViBindings<T> {
     }
 
     fn parse_normal_queue_inner(
-        &mut self, state: &mut EditorState<T>, text: &mut T, queue: &mut InputQueue,
+        &mut self,
+        state: &mut EditorState<T>,
+        text: &mut T,
+        queue: &mut InputQueue,
     ) -> bool {
         let count = std::cmp::max(Self::read_count(queue), 1);
         let Some(event) = queue.next() else { return false; };
@@ -2615,15 +2657,15 @@ impl<T: TextDocument + 'static> ViBindings<T> {
             }
             chord!(m) => {
                 let Some(ev2) = queue.next() else { return false; };
-                if let chord!(Char(c)) = ev2.chord {
-                    if c.is_ascii_alphabetic() {
-                        self.set_mark(c as u8, state.cursor.get_index());
-                    }
+                if let chord!(Char(c)) = ev2.chord
+                    && c.is_ascii_alphabetic()
+                {
+                    self.set_mark(c as u8, state.cursor.get_index());
                 }
                 return true;
             }
             chord!(g)
-                if queue.peek().map_or(false, |e| {
+                if queue.peek().is_some_and(|e| {
                     matches!(e.chord, chord!(u) | chord!(U))
                 }) =>
             {
@@ -2636,7 +2678,7 @@ impl<T: TextDocument + 'static> ViBindings<T> {
                 return self.parse_operator(state, text, op, count, queue);
             }
             chord!(g)
-                if queue.peek().map_or(false, |e| matches!(e.chord, chord!(i))) =>
+                if queue.peek().is_some_and(|e| matches!(e.chord, chord!(i))) =>
             {
                 let _ = queue.next();
                 self.action_resume_insert(state, text);
@@ -2668,7 +2710,7 @@ impl<T: TextDocument + 'static> ViBindings<T> {
             _ => {}
         }
 
-        match self.resolve_motion(state, text, &event, count, queue) {
+        match self.resolve_motion(state, text, event, count, queue) {
             Some(Ok((_, affinity))) => {
                 self.clamp_cursor_to_line_end(state, text);
                 state.anchor = state.cursor.clone();
@@ -2678,8 +2720,8 @@ impl<T: TextDocument + 'static> ViBindings<T> {
             None => return false,
             Some(Err(())) => {}
         }
-        if Self::is_mouse_click_or_drag(&event) {
-            return self.handle_normal_mouse(state, text, &event);
+        if Self::is_mouse_click_or_drag(event) {
+            return self.handle_normal_mouse(state, text, event);
         }
         match &event.chord {
             chord!(D) => self.operator_to_eol(state, text, ViOperator::Delete),
@@ -2700,7 +2742,7 @@ impl<T: TextDocument + 'static> ViBindings<T> {
             chord!(R) => self.set_mode(state, ViMode::Replace),
             chord!(v) => self.set_mode(state, ViMode::Visual),
             chord!(V) => self.set_mode(state, ViMode::VisualLine),
-            chord!(';') | chord!(',') => self.action_find_repeat(state, text, &event, count),
+            chord!(';') | chord!(',') => self.action_find_repeat(state, text, event, count),
             chord!(p) => self.paste_at(state, text, Sign::Positive),
             chord!(P) => self.paste_at(state, text, Sign::Negative),
             chord!(Backspace) => self.action_cursor_advance(state, text, Sign::Negative),
@@ -2745,7 +2787,10 @@ impl<T: TextDocument + 'static> ViBindings<T> {
     }
 
     fn parse_operator_inner(
-        &mut self, state: &mut EditorState<T>, text: &mut T, op: ViOperator,
+        &mut self,
+        state: &mut EditorState<T>,
+        text: &mut T,
+        op: ViOperator,
         op_count: usize,
         motion_count: usize,
         queue: &mut InputQueue,
@@ -2773,10 +2818,13 @@ impl<T: TextDocument + 'static> ViBindings<T> {
 
         if matches!(event.chord, chord!(i) | chord!(a)) {
             let inner = matches!(event.chord, chord!(i));
-            let Some(ev2) = queue.next() else { return false; };
-            if let chord!(Char(c)) = ev2.chord {
-                if self.text_object_range(state, text, c, inner) {
-                    if c == 'p' {
+            let Some(ev2) = queue.next() else {
+                return false;
+            };
+            if let chord!(Char(c)) = ev2.chord
+                && self.text_object_range(state, text, c, inner)
+            {
+                if c == 'p' {
                         let len = text.len();
                         let at_eof_blank = state.cursor.get_index() == len
                             && state.anchor.get_index() > 0
@@ -2810,7 +2858,6 @@ impl<T: TextDocument + 'static> ViBindings<T> {
                     self.complete_op(state, text);
                     return true;
                 }
-            }
             return true;
         }
 
@@ -2820,7 +2867,7 @@ impl<T: TextDocument + 'static> ViBindings<T> {
             let on_word = state
                 .cursor
                 .get_char_class_at(text, Sign::Positive)
-                .map_or(false, |c| c != CharClass::Whitespace);
+                .is_some_and(|c| c != CharClass::Whitespace);
             if on_word {
                 let saved = state.cursor.clone();
                 let big = matches!(event.chord, chord!(W));
@@ -2840,7 +2887,7 @@ impl<T: TextDocument + 'static> ViBindings<T> {
         }
 
         let start = state.cursor.clone();
-        match self.resolve_motion(state, text, &event, count, queue) {
+        match self.resolve_motion(state, text, event, count, queue) {
             Some(Ok((mt, _))) => {
                 if matches!(mt, Inclusivity::Inclusive) {
                     state.cursor.next_grapheme(text);
@@ -2891,7 +2938,7 @@ impl<T: TextDocument + 'static> ViBindings<T> {
         if linewise {
             self.leave_visual(state, text);
             state
-                .move_screen_line_end(text, Sign::Negative);
+                .move_screen_line_edge(text, Sign::Negative);
             state.anchor = state.cursor.clone();
         } else {
             self.set_mode(state, ViMode::VisualLine);
@@ -2916,11 +2963,12 @@ impl<T: TextDocument + 'static> ViBindings<T> {
         self.leave_visual(state, text);
         state.delete_selection(text);
         state.paste(text);
+        self.clamp_cursor_to_line_end(state, text);
     }
 
     fn visual_action_click(&mut self, state: &mut EditorState<T>, text: &mut T, event: &InputEvent) {
         self.leave_visual(state, text);
-        state.click(text, event.mouse_pos);
+        state.click(text, event.cell());
         self.clamp_cursor_to_line_end(state, text);
     }
 
@@ -3130,7 +3178,7 @@ impl<T: TextDocument + 'static> ViBindings<T> {
 
         state.seal_undo_group();
 
-        let click = event.get_click_cycle(3);
+        let click = event.click_cycle(3);
         let action_taken = match &event.chord {
             chord!(Esc) => { self.exit_visual_to_normal(state, text); true }
             chord!(v) => { self.visual_action_toggle_visual(state, text, linewise); true }
@@ -3151,23 +3199,23 @@ impl<T: TextDocument + 'static> ViBindings<T> {
             | chord!('<')
             | chord!(u)
             | chord!(U) => {
-                let op = self.visual_op(&event);
+                let op = self.visual_op(event);
                 let op_linewise =
                     linewise || matches!(op, ViOperator::Indent(_));
                 self.visual_selection_op(state, text, op, op_linewise);
                 true
             }
             chord!(p) => { self.visual_action_paste(state, text); true }
-            chord!(LeftClick) if click == 1 => { self.visual_action_click(state, text, &event); true }
-            chord!(LeftClick) if click == 2 => { state.double_click(text, event.mouse_pos); true }
+            chord!(LeftClick) if click == 1 => { self.visual_action_click(state, text, event); true }
+            chord!(LeftClick) if click == 2 => { state.double_click(text, event.cell()); true }
             chord!(LeftClick) if click == 3 => {
                 self.set_mode(state, ViMode::VisualLine);
-                state.click(text, event.mouse_pos);
+                state.click(text, event.cell());
                 true
             }
-            chord!(LeftDrag) if click == 1 => { state.drag(text, event.mouse_pos); true }
-            chord!(LeftDrag) if click == 2 => { state.double_click_drag(text, event.mouse_pos); true }
-            chord!(LeftDrag) if click == 3 => { self.triple_click_drag_visual_line(state, text, &event); true }
+            chord!(LeftDrag) if click == 1 => { state.drag(text, event.cell()); true }
+            chord!(LeftDrag) if click == 2 => { state.double_click_drag(text, event.cell()); true }
+            chord!(LeftDrag) if click == 3 => { self.triple_click_drag_visual_line(state, text, event); true }
             _ => false,
         };
         if action_taken {
@@ -3201,7 +3249,7 @@ impl<T: TextDocument + 'static> ViBindings<T> {
             _ => {}
         }
 
-        let handled = match self.resolve_motion(state, text, &event, count, queue) {
+        let handled = match self.resolve_motion(state, text, event, count, queue) {
             Some(Ok((mt, _))) => Some(mt),
             None => {
                 state.anchor = old_anchor;
@@ -3224,7 +3272,7 @@ impl<T: TextDocument + 'static> ViBindings<T> {
 
     fn triple_click_drag_visual_line(&mut self, state: &mut EditorState<T>, text: &mut T, event: &InputEvent) {
         self.set_mode(state, ViMode::VisualLine);
-        state.triple_click_drag(text, event.mouse_pos);
+        state.triple_click_drag(text, event.cell());
         if state.cursor > state.anchor {
             state.cursor.prev_grapheme(text);
         } else {
@@ -3233,16 +3281,16 @@ impl<T: TextDocument + 'static> ViBindings<T> {
     }
 
     fn handle_normal_mouse(&mut self, state: &mut EditorState<T>, text: &mut T, event: &InputEvent) -> bool {
-        let click = event.get_click_cycle(3);
+        let click = event.click_cycle(3);
         match &event.chord {
-            chord!(LeftClick) if click == 1 => state.click(text, event.mouse_pos),
-            chord!(LeftClick) if click == 2 => state.double_click(text, event.mouse_pos),
+            chord!(LeftClick) if click == 1 => state.click(text, event.cell()),
+            chord!(LeftClick) if click == 2 => state.double_click(text, event.cell()),
             chord!(LeftClick) if click == 3 => {
                 self.set_mode(state, ViMode::VisualLine);
-                state.click(text, event.mouse_pos);
+                state.click(text, event.cell());
             }
-            chord!(LeftDrag) if click == 1 => state.drag(text, event.mouse_pos),
-            chord!(LeftDrag) if click == 2 => state.double_click_drag(text, event.mouse_pos),
+            chord!(LeftDrag) if click == 1 => state.drag(text, event.cell()),
+            chord!(LeftDrag) if click == 2 => state.double_click_drag(text, event.cell()),
             chord!(LeftDrag) if click == 3 => self.triple_click_drag_visual_line(state, text, event),
             _ => return false,
         }
@@ -3336,7 +3384,7 @@ impl<T: TextDocument + 'static> ViBindings<T> {
             c
         };
         if start < c {
-            state.delete_text(text, start, c);
+            state.delete_range(text, start..c);
             state.cursor.set_index(text, start);
             state.anchor = state.cursor.clone();
             state.update_preferred_col(text);
@@ -3371,8 +3419,7 @@ impl<T: TextDocument + 'static> ViBindings<T> {
                     let replacement =
                         if grapheme == "\0" { "" } else { &grapheme };
                     state.replace_range(text,
-                        state.cursor.get_index(),
-                        end,
+                        state.cursor.get_index()..end,
                         replacement,
                     );
                     state.anchor = state.cursor.clone();
@@ -3390,12 +3437,11 @@ impl<T: TextDocument + 'static> ViBindings<T> {
                     state.insert_char(text, *c);
                 } else {
                     self.replace_stack.push_str(
-                        &text.slice(state.cursor.get_index(), next),
+                        &text.slice(state.cursor.get_index()..next),
                     );
                     let ch = c.to_string();
                     state.replace_range(text,
-                        state.cursor.get_index(),
-                        next,
+                        state.cursor.get_index()..next,
                         &ch,
                     );
                     state.cursor.next_char(text);
@@ -3420,18 +3466,14 @@ impl<T: TextDocument + 'static> ViBindings<T> {
         true
     }
 
-    fn check_mode_mappings(
-        mode: ViMode,
-        queue: &[InputEvent],
-    ) -> Result<Option<Vec<Chord>>, ()> {
-        SHARED_VI_STATE.with(|shared| {
-            let shared = shared.borrow();
+    fn check_mode_mappings(mode: ViMode, queue: &[InputEvent]) -> Result<Option<Vec<Chord>>, ()> {
+        config::with(|cfg| {
             let maps = match mode {
-                ViMode::Normal => &shared.normal_maps,
-                ViMode::Operator => &shared.operator_maps,
-                ViMode::Visual | ViMode::VisualLine => &shared.visual_maps,
-                ViMode::Insert => &shared.insert_maps,
-                ViMode::Replace => &shared.replace_maps,
+                ViMode::Normal => &cfg.normal_maps,
+                ViMode::Operator => &cfg.operator_maps,
+                ViMode::Visual | ViMode::VisualLine => &cfg.visual_maps,
+                ViMode::Insert => &cfg.insert_maps,
+                ViMode::Replace => &cfg.replace_maps,
             };
             if maps.is_empty() {
                 return Err(());
@@ -3440,27 +3482,32 @@ impl<T: TextDocument + 'static> ViBindings<T> {
         })
     }
 
-    fn on_input_inner(&mut self, state: &mut EditorState<T>, text: &mut T, queue: &mut InputQueue) -> bool {
-        if let Some(event) = queue.peek() {
-            if let Trigger::Paste(paste) = &event.chord.trigger {
-                queue.next();
-                state.seal_undo_group();
-                match self.mode {
+    fn on_input_inner(
+        &mut self,
+        state: &mut EditorState<T>,
+        text: &mut T,
+        queue: &mut InputQueue,
+    ) -> bool {
+        if let Some(event) = queue.peek()
+            && let Trigger::Paste(paste) = &event.chord.trigger
+        {
+            queue.next();
+            state.seal_undo_group();
+            match self.mode {
                     ViMode::Normal | ViMode::Operator => {
-                        self.paste_str_at(state, text, &paste, Sign::Positive);
+                        self.paste_str_at(state, text, paste, Sign::Positive);
                     }
                     ViMode::Insert | ViMode::Replace => {
                         self.record_insert_key(event);
-                        state.insert_str(text, &paste);
+                        state.insert_str(text, paste);
                     }
                     ViMode::Visual | ViMode::VisualLine => {
                         state.delete_selection(text);
-                        state.insert_str(text, &paste);
+                        state.insert_str(text, paste);
                     }
                 }
                 return true;
             }
-        }
         match self.mode {
             ViMode::Normal | ViMode::Operator => {
                 if !queue.is_flushing() {
@@ -3486,7 +3533,7 @@ impl<T: TextDocument + 'static> ViBindings<T> {
                     self.set_mode(state, ViMode::Normal);
                 }
                 tuie::dirty_paint();
-                let consumed_events = &queue.get_all()[..queue.get_consumed()];
+                let consumed_events = &queue.get_all()[..queue.get_consumed_count()];
                 if !self.replaying()
                     && Self::is_normal_command_repeatable(consumed_events)
                 {
@@ -3536,9 +3583,9 @@ impl<T: TextDocument + 'static> ViBindings<T> {
 
                 let Some(event) = queue.next() else { return false; };
                 if self.mode == ViMode::Insert {
-                    self.on_input_insert_mode(state, text, &event)
+                    self.on_input_insert_mode(state, text, event)
                 } else {
-                    self.on_input_replace_mode(state, text, &event)
+                    self.on_input_replace_mode(state, text, event)
                 }
             }
         }
@@ -3573,14 +3620,14 @@ impl<T: TextDocument + 'static> InputBindings<T> for ViBindings<T> {
     }
 
     fn get_cursor_shape(&self, _state: &EditorState<T>) -> CursorShape {
-        get_cursor_shape(self.mode)
+        config::with(|cfg| cfg.cursor_shapes.for_mode(self.mode))
     }
 
-    fn get_cursor_pos(&self, state: &EditorState<T>, _text: &T) -> usize {
+    fn get_cursor_index(&self, state: &EditorState<T>, _text: &T) -> usize {
         state.cursor.get_index()
     }
 
-    fn get_highlight_range(&self, state: &EditorState<T>, text: &T) -> (usize, usize) {
+    fn get_selected_range(&self, state: &EditorState<T>, text: &T) -> std::ops::Range<usize> {
         match self.mode {
             ViMode::VisualLine => {
                 let (lo, hi) = state.get_selection();
@@ -3589,16 +3636,16 @@ impl<T: TextDocument + 'static> InputBindings<T> for ViBindings<T> {
                 start.line_start(text);
                 end.linewise_end(text);
                 let end_idx = std::cmp::min(end.get_index(), text.len() + 1);
-                (start.get_index(), end_idx)
+                start.get_index()..end_idx
             }
             ViMode::Visual => {
                 let (start, mut end) = state.get_selection();
                 end.next_grapheme(text);
-                (start.get_index(), end.get_index())
+                start.get_index()..end.get_index()
             }
             _ => {
                 let (start, end) = state.get_selection();
-                (start.get_index(), end.get_index())
+                start.get_index()..end.get_index()
             }
         }
     }

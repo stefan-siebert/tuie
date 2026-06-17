@@ -99,7 +99,7 @@ You can also `impl Widget` yourself, which is how all of the default widgets are
 
 ## Feature flags
 
-- `harmonious` — enables Lab-space palette generation from the terminal's base16 colors.
-- `images` — enables the `Image` widget and `ImageConfig`/`ImageProtocol`/`ImageSource` types; pulls in the `image` crate.
-- `gui` — enables `start_gui` and the `gui` module; pulls in `winit`, `wgpu`, `pollster`, `fontdb`, and `freetype-rs` (plus `objc2` on macOS). Implies `harmonious`.
+- `harmonious`: enable Lab-space palette generation from the terminal's base16 colors.
+- `images`: enable the `Image` widget and `ImageConfig`/`ImageProtocol`/`ImageSource` types, pulling in the `image` crate.
+- `gui`: enable `start_gui` and the `gui` module, pulling in `winit`, `wgpu`, `pollster`, `fontdb`, and `freetype-rs` (plus `objc2` on macOS). Implies `harmonious`.
 

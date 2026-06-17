@@ -77,13 +77,13 @@ impl<T: TextDocument> Editor<T> {
     }
 
     /// Returns the byte offset where the cursor should be drawn.
-    pub fn get_cursor_pos(&self, text: &T) -> usize {
-        self.bindings.get_cursor_pos(&self.state, text)
+    pub fn get_cursor_index(&self, text: &T) -> usize {
+        self.bindings.get_cursor_index(&self.state, text)
     }
 
-    /// Returns the byte range to render as highlighted selection.
-    pub fn get_highlight_range(&self, text: &T) -> (usize, usize) {
-        self.bindings.get_highlight_range(&self.state, text)
+    /// Returns the selected byte range to render.
+    pub fn get_selected_range(&self, text: &T) -> std::ops::Range<usize> {
+        self.bindings.get_selected_range(&self.state, text)
     }
 
     /// Read-only access to the active cursor.
@@ -99,12 +99,6 @@ impl<T: TextDocument> Editor<T> {
     /// Returns the side of a wrap boundary the cursor is on.
     pub fn get_wrap_bias(&self) -> Sign {
         self.state.get_wrap_bias()
-    }
-
-    /// Returns the selection as an ordered `(low, high)` byte index pair.
-    pub fn get_selection_range(&self) -> (usize, usize) {
-        let (start, end) = self.state.get_selection();
-        (start.get_index(), end.get_index())
     }
 
     /// Returns the selected substring.
@@ -132,42 +126,27 @@ impl<T: TextDocument> Editor<T> {
         self.state.select_all(text);
     }
 
+    /// Places the cursor and anchor at the given byte offsets.
+    pub fn set_selection(&mut self, text: &T, cursor: usize, anchor: usize) {
+        self.state.cursor.set_index(text, cursor);
+        self.state.anchor.set_index(text, anchor);
+        self.state.update_preferred_col(text);
+    }
+
     /// Sets whether the selection includes the grapheme under the cursor.
     pub fn set_inclusive_selection(&mut self, inclusive: bool) {
         self.state.inclusive_selection = inclusive;
     }
 
     /// Returns whether the selection includes the grapheme under the cursor.
-    pub fn is_inclusive_selection(&self) -> bool {
-        self.state.is_inclusive_selection()
+    pub fn has_inclusive_selection(&self) -> bool {
+        self.state.inclusive_selection
     }
 
-    /// Replaces the entire document content with `s`.
-    pub fn replace_all(&mut self, text: &mut T, s: &str) {
-        self.state.replace_all(text, s);
-    }
-
-    /// Replaces the entire document with `s`, placing cursor and anchor at the given byte offsets.
-    pub fn replace_all_with_selection(
-        &mut self, text: &mut T, s: &str,
-        cursor: usize,
-        anchor: usize,
-    ) {
-        let len = text.len();
-        self.state.replace_range(text, 0, len, s);
-        self.state.cursor.set_index(text, cursor);
-        self.state.anchor.set_index(text, anchor);
-        self.state.update_preferred_col(text);
-    }
-
-    /// Replaces the entire document with `s`, moving the cursor to the start.
+    /// Replaces the entire document with `s`, moving the cursor to the end.
     pub fn set_content(&mut self, text: &mut T, s: &str) {
         self.state.seal_undo_group();
-        let len = text.len();
-        self.state.replace_range(text, 0, len, s);
-        self.state.cursor.move_document_end(text, Sign::Negative);
-        self.state.anchor = self.state.cursor.clone();
-        self.state.update_preferred_col(text);
+        self.state.set_content(text, s);
     }
 
     /// Moves the cursor one cell, collapsing any selection toward the leading edge.
@@ -191,28 +170,28 @@ impl<T: TextDocument> Editor<T> {
     }
 
     /// Moves the cursor to the screen line edge and collapses the selection.
-    pub fn move_cursor_line_end(&mut self, text: &T, sign: Sign) {
-        self.state.move_cursor_line_end(text, sign);
+    pub fn move_cursor_line_edge(&mut self, text: &T, sign: Sign) {
+        self.state.move_cursor_line_edge(text, sign);
     }
 
     /// Extends the selection to the screen line edge.
-    pub fn extend_selection_line_end(&mut self, text: &T, sign: Sign) {
-        self.state.extend_selection_line_end(text, sign);
+    pub fn extend_selection_line_edge(&mut self, text: &T, sign: Sign) {
+        self.state.extend_selection_line_edge(text, sign);
     }
 
     /// Moves the cursor to the start or end of the document and collapses the selection.
-    pub fn move_cursor_document_end(&mut self, text: &T, sign: Sign) {
-        self.state.move_cursor_document_end(text, sign);
+    pub fn move_cursor_document_edge(&mut self, text: &T, sign: Sign) {
+        self.state.move_cursor_document_edge(text, sign);
     }
 
     /// Extends the selection to the start or end of the document.
-    pub fn extend_selection_document_end(&mut self, text: &T, sign: Sign) {
-        self.state.extend_selection_document_end(text, sign);
+    pub fn extend_selection_document_edge(&mut self, text: &T, sign: Sign) {
+        self.state.extend_selection_document_edge(text, sign);
     }
 
     /// Extends to the document edge, swapping cursor and anchor when reversing past the anchor.
-    pub fn grow_extend_selection_document_end(&mut self, text: &T, sign: Sign) {
-        self.state.grow_extend_selection_document_end(text, sign);
+    pub fn grow_extend_selection_document_edge(&mut self, text: &T, sign: Sign) {
+        self.state.grow_extend_selection_document_edge(text, sign);
     }
 
     /// Inserts a single character, replacing the selection if any.
@@ -242,7 +221,7 @@ impl<T: TextDocument> Editor<T> {
 
     /// Copies the selection to the clipboard.
     pub fn copy(&mut self, text: &T) {
-        self.state.copy_selection(text);
+        self.state.copy(text);
     }
 
     /// Copies the selection to the clipboard and deletes it.
@@ -256,32 +235,31 @@ impl<T: TextDocument> Editor<T> {
     }
 
     /// Deletes from the cursor to the adjacent line boundary in `sign`.
-    pub fn delete_to_line_end(&mut self, text: &mut T, sign: Sign) {
-        self.state.delete_to_line_end(text, sign);
+    pub fn delete_to_line_edge(&mut self, text: &mut T, sign: Sign) {
+        self.state.delete_to_line_edge(text, sign);
     }
 
-    /// Deletes the byte range `start..end`, adjusting for a trailing newline at end of file.
-    pub fn delete_lines(&mut self, text: &mut T, start: usize, end: usize) {
-        self.state.delete_lines(text, start, end);
+    /// Deletes the byte `range`, adjusting for a trailing newline at end of file.
+    pub fn delete_lines(&mut self, text: &mut T, range: std::ops::Range<usize>) {
+        self.state.delete_lines(text, range);
     }
 
-    /// Replaces the byte range `start..end` with `replacement`, preserving a trailing newline.
+    /// Replaces the byte `range` with `replacement`, preserving a trailing newline.
     pub fn replace_lines(
-        &mut self, text: &mut T, start: usize,
-        end: usize,
+        &mut self, text: &mut T, range: std::ops::Range<usize>,
         replacement: &str,
     ) {
-        self.state.replace_lines(text, start, end, replacement);
+        self.state.replace_lines(text, range, replacement);
     }
 
-    /// Deletes the byte range `start..end`.
-    pub fn delete_text(&mut self, text: &mut T, start: usize, end: usize) {
-        self.state.delete_text(text, start, end);
+    /// Deletes the byte `range`.
+    pub fn delete_range(&mut self, text: &mut T, range: std::ops::Range<usize>) {
+        self.state.delete_range(text, range);
     }
 
-    /// Replaces the byte range `start..end` with `s`.
-    pub fn replace_range(&mut self, text: &mut T, start: usize, end: usize, s: &str) {
-        self.state.replace_range(text, start, end, s);
+    /// Replaces the byte `range` with `s`.
+    pub fn replace_range(&mut self, text: &mut T, range: std::ops::Range<usize>, s: &str) {
+        self.state.replace_range(text, range, s);
     }
 
     /// Expands both ends of the selection to whole-line boundaries.
@@ -299,8 +277,8 @@ impl<T: TextDocument> Editor<T> {
         self.state.is_dirty()
     }
 
-    /// Returns the `(top, bottom)` inclusive-exclusive visible row range.
-    pub fn get_visible_region(&self, text: &T) -> (i32, i32) {
-        self.state.get_visible_region(text)
+    /// Returns the visible row range.
+    pub fn get_visible_range(&self, text: &T) -> std::ops::Range<i32> {
+        self.state.get_visible_range(text)
     }
 }
