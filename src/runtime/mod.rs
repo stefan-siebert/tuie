@@ -2321,6 +2321,13 @@ impl Runtime {
         let result = match walk_path_mut(dispatch_root, path) {
             Some(target) => {
                 event.pos = leaf_pos - target.get_pos().map(|v| v as f32);
+                log::trace!(
+                    target: "tuie::input",
+                    "dispatch_mouse: chord={} path_len={} leaf_pos={:?}",
+                    event.chord,
+                    path.len(),
+                    (leaf_pos.x, leaf_pos.y),
+                );
                 let mut queue = InputQueue::new(std::slice::from_ref(&*event), false);
                 target.on_input(&mut queue)
             }
@@ -2735,6 +2742,11 @@ impl Runtime {
             // content — we leave the cursor exactly where it is so the terminal's
             // hardware blink keeps its cadence instead of restarting every frame.
             let cursor_touched = wrote || visible_cursor != prev_cursor;
+            log::trace!(
+                target: "tuie::render",
+                "paint: wrote={wrote} cursor_touched={cursor_touched} cursor={:?}",
+                cursor.map(|(_, p)| (p.x, p.y)),
+            );
             if cursor_touched {
                 let (mut was_visible, last_style) =
                     with_ctx(|ctx| (ctx.cursor_visible, ctx.last_cursor_style));
@@ -2806,6 +2818,12 @@ impl Runtime {
         match self.popup_hit_test(event.cell()) {
             PopupHitResult::Hit(i) => {
                 let path = build_scroll_path(&*self.popups[i].content, event.pos, direction);
+                log::trace!(
+                    target: "tuie::scroll",
+                    "popup scroll: hit=i{i} can_scroll(dir)={} path_len={}",
+                    self.popups[i].content.can_scroll(direction),
+                    path.len(),
+                );
                 let result = if !path.is_empty() {
                     self.dispatch_mouse(root, &path, event)
                 } else {
@@ -2813,8 +2831,14 @@ impl Runtime {
                 };
                 Some(result)
             }
-            PopupHitResult::Blocked => Some(InputResult::Handled),
-            PopupHitResult::Miss => None,
+            PopupHitResult::Blocked => {
+                log::trace!(target: "tuie::scroll", "popup scroll: blocked cell={:?}", (event.cell().x, event.cell().y));
+                Some(InputResult::Handled)
+            }
+            PopupHitResult::Miss => {
+                log::trace!(target: "tuie::scroll", "popup scroll: miss cell={:?}", (event.cell().x, event.cell().y));
+                None
+            }
         }
     }
 

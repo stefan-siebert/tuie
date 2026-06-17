@@ -237,6 +237,7 @@ impl RuntimeEventReader {
 /// presses / releases or the resting position. Events of other kinds (keys,
 /// clicks, paste, resize) break a run and are always preserved.
 fn coalesce_motion(events: &mut Vec<RuntimeEvent>) {
+    let before_len = events.len();
     fn motion_kind(event: &RuntimeEvent) -> Option<u8> {
         match event {
             RuntimeEvent::Input(input) => match input.chord.trigger {
@@ -263,6 +264,9 @@ fn coalesce_motion(events: &mut Vec<RuntimeEvent>) {
         write += 1;
     }
     events.truncate(write);
+    if write < before_len {
+        log::trace!(target: "tuie::input", "coalesced {} motion event(s) -> {}", before_len, write);
+    }
 }
 
 #[cfg(test)]
