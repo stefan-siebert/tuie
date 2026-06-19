@@ -2375,6 +2375,7 @@ struct Divider {
     edges: Vec<CrossEdge>,
 }
 
+#[derive(Clone)]
 struct DragDivider {
     container_path: Vec<usize>,
     divider_idx: usize,
@@ -2384,6 +2385,59 @@ struct DragDivider {
 
 struct DragState {
     dividers: Vec<DragDivider>,
+    /// Set once the divider actually moves, so a plain click on the divider
+    /// (down + up with no motion) never triggers snap-to-default on release.
+    moved: bool,
+}
+
+/// Visual + snapping behaviour for divider drags, enabled via
+/// [`Split::resize_feedback`].
+///
+/// While the user drags a divider a small tooltip shows the live split
+/// percentage of the two adjacent panes; on release the divider snaps to its
+/// flex-default position when the split is within
+/// [`snap_threshold_percent`](ResizeFeedback::snap_threshold_percent) of it, and
+/// double-clicking a divider resets it to that default outright.
+#[derive(Debug, Clone, Copy)]
+pub struct ResizeFeedback {
+    /// Tooltip style while the divider is away from its default position.
+    pub normal_style: Style,
+    /// Tooltip style while within the snap threshold (also appends `[snap]`).
+    pub snap_style: Style,
+    /// Divider-line style while the pointer hovers it (or it is being dragged).
+    /// This is the terminal-independent resize affordance — applied on top of
+    /// the normal border style — that signals the divider is draggable even on
+    /// terminals that ignore the `OSC 22` resize cursor.
+    pub hover_style: Style,
+    /// Snap radius in percentage points of the dragged pair's combined size.
+    /// `0.0` disables snap-on-release (live tooltip only); double-click reset
+    /// stays available regardless.
+    pub snap_threshold_percent: f32,
+}
+
+/// Transient render state for the resize tooltip, recomputed on every drag step
+/// and cleared on release.
+struct ResizeHud {
+    axis: Axis2D,
+    /// Divider position along `axis`, in widget-local cells.
+    pos: i32,
+    /// Cross-axis span of the divider, in widget-local cells.
+    cross_start: i32,
+    cross_end: i32,
+    /// Sizes of the two adjacent panes along `axis`, for the percentage.
+    first: u16,
+    second: u16,
+    /// Whether the current split is within the snap threshold.
+    snapping: bool,
+}
+
+/// Resize pointer for a divider split along `axis`: a vertical divider (axis X)
+/// resizes left↔right, a horizontal divider (axis Y) resizes up↕down.
+fn pointer_for_axis(axis: Axis2D) -> MousePointerShape {
+    match axis {
+        Axis2D::X => MousePointerShape::ColResize,
+        Axis2D::Y => MousePointerShape::RowResize,
+    }
 }
 
 fn build_divider_map(
@@ -2411,6 +2465,8 @@ pub struct Split {
     left_edges: Vec<CrossEdge>,
     right_edges: Vec<CrossEdge>,
     gap: u16,
+    resize_feedback: Option<ResizeFeedback>,
+    resize_hud: Option<ResizeHud>,
 }
 
 impl Split {
@@ -2606,15 +2662,23 @@ impl Widget for Split {
 
         let fallback_border = self.chrome.get_resolved_border();
         let normal_border_style = self.chrome.get_resolved_border_style();
+        // Terminal-independent resize affordance: tint the hovered/dragged
+        // divider so it's visibly interactive even without an OSC 22 cursor.
+        let hover_style = self.resize_feedback.map(|f| f.hover_style);
+        let highlight_divider = hover_style.and_then(|_| self.highlighted_divider());
 
         for div in &self.dividers {
             let a = div.axis;
             let ca = a.flip();
+            let highlighted = highlight_divider == Some((div.axis, div.pos));
             for cross in div.start..div.end {
                 let edge = edge_style_at(&div.edges, cross);
                 let mut cell_style = normal_border_style;
                 if let Some(e) = edge {
                     cell_style = cell_style.apply(e.style);
+                }
+                if highlighted && let Some(style) = hover_style {
+                    cell_style = cell_style.apply(style);
                 }
 
                 let mut perp_neg: &Border = Border::HIDDEN;
@@ -2788,6 +2852,8 @@ impl Widget for Split {
             normal_border_style,
             &mut ctx,
         );
+
+        self.render_resize_hud(&mut ctx);
     }
 
     fn each_child(
@@ -2877,12 +2943,26 @@ impl Widget for Split {
         })
     }
 
+    fn get_mouse_pointer_shape(&self, pos: Vec2<i32>) -> Option<MousePointerShape> {
+        // While dragging keep the resize pointer for the grabbed axis, even if
+        // the pointer slips a cell off the divider line mid-drag.
+        if let Some(drag) = &self.drag {
+            return drag.dividers.first().map(|dd| pointer_for_axis(dd.axis));
+        }
+        // Otherwise advertise a resize pointer wherever a press would grab a
+        // divider — `pos` is in the same widget-local frame as `on_input`.
+        self.divider_at(Vec2::new(pos.x, pos.y))
+            .map(|(axis, _)| pointer_for_axis(axis))
+    }
+
     fn on_input(&mut self, queue: &mut InputQueue) -> InputResult {
         let Some(event) = queue.peek() else { return InputResult::Rejected; };
+        let event = event.clone();
         match &event.chord {
             chord!(LeftClick) => {
                 let mouse = event.cell();
                 let mouse_vec = Vec2::new(mouse.x, mouse.y);
+                let double_click = event.count == 2;
 
                 let inner_offset = self.inner_offset();
 
@@ -2913,13 +2993,24 @@ impl Widget for Split {
 
                 queue.next();
 
+                // Double-click a divider to reset it to its flex-default split.
+                if double_click && self.resize_feedback.is_some() {
+                    for dd in &drag_dividers {
+                        self.reset_divider(dd);
+                    }
+                    self.drag = None;
+                    self.resize_hud = None;
+                    return InputResult::Handled;
+                }
+
                 self.drag = Some(DragState {
                     dividers: drag_dividers,
+                    moved: false,
                 });
                 InputResult::Handled
             }
             chord!(LeftDrag) => {
-                if let Some(drag) = self.drag.take() {
+                if let Some(mut drag) = self.drag.take() {
                     queue.next();
                     let inner_offset = self.inner_offset();
 
@@ -2986,6 +3077,12 @@ impl Widget for Split {
                     self.rebuild_render_cache();
                     self.dirty_layout();
 
+                    drag.moved = true;
+                    if let Some(dd) = drag.dividers.first() {
+                        let dd = dd.clone();
+                        self.update_resize_hud(&dd);
+                    }
+
                     self.drag = Some(drag);
                     InputResult::Handled
                 } else {
@@ -2993,9 +3090,19 @@ impl Widget for Split {
                 }
             }
             chord!(LeftRelease) => {
-                if self.drag.is_some() {
-                    self.drag = None;
+                if let Some(drag) = self.drag.take() {
                     queue.next();
+                    // Clearing the tooltip must repaint the cells it occupied,
+                    // even when the release doesn't move the divider.
+                    let had_hud = self.resize_hud.take().is_some();
+                    if drag.moved {
+                        for dd in &drag.dividers {
+                            self.snap_divider(dd);
+                        }
+                    }
+                    if had_hud {
+                        self.dirty_layout();
+                    }
                     InputResult::Handled
                 } else {
                     InputResult::Rejected
@@ -3007,6 +3114,241 @@ impl Widget for Split {
 }
 
 impl Split {
+    /// Render identity `(axis, pos)` of the divider under widget-local point
+    /// `local`, or `None` when the point isn't on a draggable divider. `pos` is
+    /// in the same local render frame as [`Divider::pos`], so it matches the
+    /// dividers walked in [`Split::render`].
+    fn divider_at(&self, local: Vec2<i32>) -> Option<(Axis2D, i32)> {
+        let inner_offset = self.inner_offset();
+        let mut found = Vec::new();
+        let mut path_buf = Vec::new();
+        self.root.node.find_all_dividers_at_pos(
+            inner_offset, Axis2D::X, local, self.gap, &mut path_buf, &mut found,
+        );
+        path_buf.clear();
+        self.root.node.find_all_dividers_at_pos(
+            inner_offset, Axis2D::Y, local, self.gap, &mut path_buf, &mut found,
+        );
+        let dd = found.first()?;
+        let pos = self.root.divider_abs_pos(
+            &dd.container_path, dd.divider_idx, dd.axis, inner_offset, self.gap,
+        )?;
+        Some((dd.axis, pos))
+    }
+
+    /// Render identity of the divider to highlight: the one being dragged, or
+    /// the one the runtime reports the pointer is hovering (see
+    /// [`crate::runtime::resize_hover_for`]). `None` = highlight nothing.
+    fn highlighted_divider(&self) -> Option<(Axis2D, i32)> {
+        if let Some(drag) = &self.drag {
+            let dd = drag.dividers.first()?;
+            let inner_offset = self.inner_offset();
+            return self
+                .root
+                .divider_abs_pos(&dd.container_path, dd.divider_idx, dd.axis, inner_offset, self.gap)
+                .map(|pos| (dd.axis, pos));
+        }
+        let local = crate::runtime::resize_hover_for(self.get_id().untyped())?;
+        self.divider_at(local)
+    }
+
+    /// Sizes and flex weights of the two panes adjacent to a divider, along
+    /// `axis`: `(first, second, flex_first, flex_second)`.
+    fn pair_info(
+        &self,
+        path: &[usize],
+        divider_idx: usize,
+        axis: Axis2D,
+    ) -> Option<(u16, u16, u8, u8)> {
+        let mut node = &self.root.node;
+        for &idx in path {
+            let SplitNode::Container { children, .. } = node else {
+                return None;
+            };
+            node = &children.get(idx)?.node;
+        }
+        let SplitNode::Container { children, .. } = node else {
+            return None;
+        };
+        let first = children.get(divider_idx)?;
+        let second = children.get(divider_idx + 1)?;
+        Some((
+            first.size_along(axis),
+            second.size_along(axis),
+            first.effective_flex(),
+            second.effective_flex(),
+        ))
+    }
+
+    /// Flex-default target size of the first pane in a pair, falling back to an
+    /// even split when both weights are zero. Returns `(target_first, total)`.
+    fn flex_target_first(first: u16, second: u16, flex_first: u8, flex_second: u8) -> (i32, i32) {
+        let total = first as i32 + second as i32;
+        let (wa, wb) = if flex_first as u32 + flex_second as u32 == 0 {
+            (1i64, 1i64)
+        } else {
+            (flex_first as i64, flex_second as i64)
+        };
+        let target = ((total as i64 * wa) / (wa + wb)) as i32;
+        (target, total)
+    }
+
+    /// Applies `delta` cells to a divider and re-runs the same layout sequence as
+    /// an interactive drag step.
+    fn apply_divider_delta(&mut self, dd: &DragDivider, delta: i32) {
+        if delta == 0 {
+            return;
+        }
+        self.root.move_divider_propagate(
+            &dd.container_path,
+            dd.divider_idx,
+            dd.axis,
+            delta,
+            self.gap,
+            self.chrome.padding,
+            true,
+        );
+        self.root.set_leaf_sizes_mut(self.chrome.padding);
+        self.root.reflow_leaves_mut(self.chrome.padding);
+        let pos = self.inner_content_pos();
+        self.root.position_children_mut(pos, self.gap, self.chrome.padding);
+        self.root.node.reposition_leaves_mut();
+        self.rebuild_render_cache();
+        self.dirty_layout();
+    }
+
+    /// Snaps a divider to its flex-default position when the current split is
+    /// within the configured threshold. Returns `true` when it moved.
+    fn snap_divider(&mut self, dd: &DragDivider) -> bool {
+        let Some(feedback) = self.resize_feedback else {
+            return false;
+        };
+        if feedback.snap_threshold_percent <= 0.0 {
+            return false;
+        }
+        let Some((first, second, flex_a, flex_b)) =
+            self.pair_info(&dd.container_path, dd.divider_idx, dd.axis)
+        else {
+            return false;
+        };
+        let (target_first, total) = Self::flex_target_first(first, second, flex_a, flex_b);
+        if total <= 0 {
+            return false;
+        }
+        let current_pct = first as f32 / total as f32 * 100.0;
+        let target_pct = target_first as f32 / total as f32 * 100.0;
+        if (current_pct - target_pct).abs() > feedback.snap_threshold_percent {
+            return false;
+        }
+        let delta = target_first - first as i32;
+        if delta == 0 {
+            return false;
+        }
+        self.apply_divider_delta(dd, delta);
+        true
+    }
+
+    /// Resets a divider to its flex-default position unconditionally
+    /// (double-click handler).
+    fn reset_divider(&mut self, dd: &DragDivider) {
+        let Some((first, second, flex_a, flex_b)) =
+            self.pair_info(&dd.container_path, dd.divider_idx, dd.axis)
+        else {
+            return;
+        };
+        let (target_first, total) = Self::flex_target_first(first, second, flex_a, flex_b);
+        if total <= 0 {
+            return;
+        }
+        self.apply_divider_delta(dd, target_first - first as i32);
+    }
+
+    /// Recomputes the live tooltip state for the primary dragged divider.
+    fn update_resize_hud(&mut self, dd: &DragDivider) {
+        let Some(feedback) = self.resize_feedback else {
+            self.resize_hud = None;
+            return;
+        };
+        let axis = dd.axis;
+        let inner_offset = self.inner_offset();
+        let Some(pos) = self.root.divider_abs_pos(
+            &dd.container_path,
+            dd.divider_idx,
+            axis,
+            inner_offset,
+            self.gap,
+        ) else {
+            self.resize_hud = None;
+            return;
+        };
+        let Some((first, second, flex_a, flex_b)) =
+            self.pair_info(&dd.container_path, dd.divider_idx, axis)
+        else {
+            self.resize_hud = None;
+            return;
+        };
+        let ca = axis.flip();
+        let (cross_start, cross_end) = self
+            .dividers
+            .iter()
+            .find(|d| d.axis == axis && d.pos == pos)
+            .map(|d| (d.start, d.end))
+            .unwrap_or((inner_offset[ca], inner_offset[ca] + 1));
+        let (target_first, total) = Self::flex_target_first(first, second, flex_a, flex_b);
+        let snapping = feedback.snap_threshold_percent > 0.0
+            && total > 0
+            && (first as f32 / total as f32 * 100.0 - target_first as f32 / total as f32 * 100.0)
+                .abs()
+                <= feedback.snap_threshold_percent;
+        self.resize_hud = Some(ResizeHud {
+            axis,
+            pos,
+            cross_start,
+            cross_end,
+            first,
+            second,
+            snapping,
+        });
+    }
+
+    /// Paints the resize tooltip over the dragged divider. No-op unless a drag
+    /// is in progress with [`ResizeFeedback`] enabled.
+    fn render_resize_hud(&self, ctx: &mut crate::render::RenderContext) {
+        let Some(feedback) = self.resize_feedback else { return };
+        let Some(hud) = &self.resize_hud else { return };
+        let total = hud.first as i32 + hud.second as i32;
+        if total <= 0 {
+            return;
+        }
+        let left_pct = (hud.first as f32 / total as f32 * 100.0).round() as i32;
+        let right_pct = 100 - left_pct;
+        let label = if hud.snapping {
+            format!(" {left_pct}% | {right_pct}% [snap] ")
+        } else {
+            format!(" {left_pct}% | {right_pct}% ")
+        };
+        let width = crate::render::display_width(&label) as i32;
+        let size = self.layout.rect.size;
+        let (max_x, max_y) = (size.x as i32, size.y as i32);
+
+        // Horizontal label: centre it on the divider, then clamp into view.
+        let (mut x, mut y) = match hud.axis {
+            Axis2D::X => (hud.pos - width / 2, hud.cross_start + 1),
+            Axis2D::Y => ((hud.cross_start + hud.cross_end) / 2 - width / 2, hud.pos),
+        };
+        x = x.clamp(0, (max_x - width).max(0));
+        y = y.clamp(0, (max_y - 1).max(0));
+
+        let style = if hud.snapping {
+            feedback.snap_style
+        } else {
+            feedback.normal_style
+        };
+        ctx.set_style(style);
+        ctx.move_to(Vec2::new(x, y));
+        ctx.write(&label);
+    }
+
     /// Creates a split from a [`SplitPane`].
     pub fn new(pane: SplitPane) -> Box<Self> {
         let root = pane.build();
@@ -3022,6 +3364,8 @@ impl Split {
             left_edges: Vec::new(),
             right_edges: Vec::new(),
             gap: 1,
+            resize_feedback: None,
+            resize_hud: None,
         })
     }
 
@@ -3202,5 +3546,22 @@ impl Split {
         self.root.flex_distribute(self.gap, self.chrome.padding, flow_output_size);
         self.root.reinforce_mins(self.gap, self.chrome.padding, flow_output_size);
         self.dirty_layout();
+    }
+
+    /// Builder form of [`Split::set_resize_feedback`]. Enables the drag tooltip,
+    /// snap-to-default on release, and double-click-to-reset described on
+    /// [`ResizeFeedback`].
+    pub fn resize_feedback(mut self: Box<Self>, feedback: ResizeFeedback) -> Box<Self> {
+        self.set_resize_feedback(Some(feedback));
+        self
+    }
+
+    /// Enables (or, with `None`, disables) the resize tooltip + snap behaviour.
+    /// Safe to call every frame to keep tooltip styles in sync with the theme.
+    pub fn set_resize_feedback(&mut self, feedback: Option<ResizeFeedback>) {
+        self.resize_feedback = feedback;
+        if feedback.is_none() {
+            self.resize_hud = None;
+        }
     }
 }

@@ -106,6 +106,7 @@ pub mod prelude {
     pub use super::widget::chrome::ChromeTitle;
     pub use super::render::color::Color;
     pub use super::render::cursor::CursorShape;
+    pub use super::render::cursor::MousePointerShape;
     pub use super::runtime::event::ColorScheme;
     pub use super::runtime::event::RuntimeEvent;
     pub use super::widget::events::ChangeEvent;
@@ -123,6 +124,7 @@ pub mod prelude {
     pub use super::widget::widgets::list::ListRequestEvent;
     pub use super::widget::widgets::pane::Pane;
     pub use super::widget::widgets::stack::Stack;
+    pub use super::widget::widgets::split::ResizeFeedback;
     pub use super::widget::widgets::split::Split;
     pub use super::widget::widgets::split::SplitPane;
     pub use super::widget::widgets::split::SplitPaneChild;

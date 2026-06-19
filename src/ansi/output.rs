@@ -458,6 +458,15 @@ pub fn reset_cursor_style(out: &mut String) {
     out.push_str("\x1b[0 q");
 }
 
+/// Sets the mouse pointer shape (`OSC 22 ; <css-name> ST`). Terminals that
+/// don't support `OSC 22` ignore the sequence.
+#[inline]
+pub fn set_mouse_pointer_shape(out: &mut String, shape: MousePointerShape) {
+    out.push_str("\x1b]22;");
+    out.push_str(shape.css_name());
+    out.push_str("\x1b\\");
+}
+
 /// Sets the cursor style (DECSCUSR, `CSI n SP q`) from a [`CursorShape`] and blink flag.
 #[inline]
 pub fn set_cursor_style(out: &mut String, shape: CursorShape, blink: bool) {

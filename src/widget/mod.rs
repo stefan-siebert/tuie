@@ -1526,6 +1526,14 @@ pub trait Widget: std::any::Any {
         None
     }
 
+    /// The mouse pointer shape this widget wants while the pointer is at `pos`
+    /// (widget-local cells, the same frame as [`Widget::on_input`] mouse
+    /// events). The runtime queries the widget under the mouse each frame and
+    /// emits `OSC 22`; `None` means "no preference" — the default arrow.
+    fn get_mouse_pointer_shape(&self, _pos: Vec2<i32>) -> Option<MousePointerShape> {
+        None
+    }
+
     /// Reveals the rects in `revelation`.
     fn reveal(
         &mut self,

@@ -337,6 +337,9 @@ struct RuntimeContext {
     /// send it when it actually changes. `None` means "unknown / reset" — the
     /// next paint will (re-)emit it.
     last_cursor_style: Option<(CursorShape, bool)>,
+    /// Last mouse pointer shape emitted via `OSC 22`. Diffed so we only re-emit
+    /// on change. `None` means "unknown" — the next paint (re-)emits.
+    last_mouse_pointer_shape: Option<MousePointerShape>,
     buf: String,
     mouse_pixel_dpr: Option<Vec2<u8>>,
 }
@@ -370,6 +373,7 @@ impl RuntimeContext {
             cursor_visible: true,
             emulator_cursor: None,
             last_cursor_style: None,
+            last_mouse_pointer_shape: None,
             buf: String::new(),
             mouse_pixel_dpr: None,
         }
@@ -536,6 +540,26 @@ pub fn dirty_paint() {
     with_ctx_mut(|ctx| {
         ctx.dirty |= DirtyImpact::Paint;
     });
+}
+
+thread_local! {
+    /// The widget the pointer is hovering for a resize affordance, plus the
+    /// pointer position in that widget's local frame. Set by `paint_terminal`
+    /// each frame and read by widgets during render (e.g. `Split` to highlight
+    /// the hovered divider).
+    static RESIZE_HOVER: std::cell::Cell<Option<(WidgetId, Vec2<i32>)>> =
+        const { std::cell::Cell::new(None) };
+}
+
+pub(crate) fn set_resize_hover(value: Option<(WidgetId, Vec2<i32>)>) {
+    RESIZE_HOVER.with(|c| c.set(value));
+}
+
+/// The local pointer position when `id` is the resize-hovered widget this frame.
+pub(crate) fn resize_hover_for(id: WidgetId) -> Option<Vec2<i32>> {
+    RESIZE_HOVER.with(|c| c.get()).and_then(|(hover_id, local)| {
+        (hover_id == id).then_some(local)
+    })
 }
 
 /// Scrolls to bring the widget with `id` into view, pinned by `align`.
@@ -1339,6 +1363,7 @@ impl RuntimeContext {
                     let mut buf = String::new();
                     output::reset_cursor_style(&mut buf);
                     output::show_cursor(&mut buf);
+                    output::set_mouse_pointer_shape(&mut buf, MousePointerShape::Default);
                     output::leave_alternate_screen(&mut buf);
                     output::pop_keyboard_enhancement_flags(&mut buf);
                     output::disable_mouse_pixel_capture(&mut buf);
@@ -1572,8 +1597,10 @@ impl RuntimeContext {
         crate::theme::harmonious::clear_palette();
         output::reset_cursor_style(&mut self.buf);
         output::show_cursor(&mut self.buf);
+        output::set_mouse_pointer_shape(&mut self.buf, MousePointerShape::Default);
         self.cursor_visible = true;
         self.last_cursor_style = None;
+        self.last_mouse_pointer_shape = None;
         output::leave_alternate_screen(&mut self.buf);
         output::pop_keyboard_enhancement_flags(&mut self.buf);
         let pixel_mouse = self
@@ -2042,6 +2069,21 @@ impl Runtime {
                             if !self.mouse_path.is_empty() {
                                 let path = self.mouse_path.clone();
                                 self.dispatch_mouse(root, &path, &mut event);
+                            }
+                            // Repaint so the resize affordance (OSC 22 cursor +
+                            // divider highlight) tracks the pointer even when no
+                            // widget dirtied. A non-default shape repaints on
+                            // every motion so the cursor is re-asserted against
+                            // terminals that reset the pointer on movement;
+                            // default only repaints on the transition.
+                            let shape = self
+                                .compute_resize_hover(root)
+                                .map(|(_, _, s)| s)
+                                .unwrap_or(MousePointerShape::Default);
+                            if shape != MousePointerShape::Default
+                                || with_ctx(|ctx| ctx.last_mouse_pointer_shape) != Some(shape)
+                            {
+                                dirty_paint();
                             }
                         }
                         Trigger::MouseScroll(direction) => {
@@ -2650,6 +2692,33 @@ impl Runtime {
         }
     }
 
+    /// Walks the hovered path (deepest widget first) and returns the first
+    /// widget that wants a non-default mouse pointer, with the pointer position
+    /// in that widget's local frame and the requested shape.
+    ///
+    /// Walking the whole path — not just the leaf — lets an ancestor like
+    /// `Split` claim the resize cursor for a divider cell that hit-testing
+    /// attributes to a child pane (a merged pane border).
+    fn compute_resize_hover(
+        &self,
+        root: &dyn Widget,
+    ) -> Option<(WidgetId, Vec2<i32>, MousePointerShape)> {
+        if self.mouse_path.is_empty() {
+            return None;
+        }
+        let active_root = self.get_active_root(root);
+        let abs = self.mouse_pos.map(|v| v.floor() as i32);
+        for &id in self.mouse_path.iter().rev() {
+            if let Some(widget) = active_root.find(id) {
+                let local = abs - widget.get_pos();
+                if let Some(shape) = widget.get_mouse_pointer_shape(local) {
+                    return Some((id, local, shape));
+                }
+            }
+        }
+        None
+    }
+
     fn paint(
         &mut self,
         root: &dyn Widget,
@@ -2709,6 +2778,13 @@ impl Runtime {
         cursor: Option<(CursorShape, Vec2<i32>)>,
     ) -> std::io::Result<()> {
         let term_size = get_runtime_info().size;
+        let resize_hover = self.compute_resize_hover(root);
+        // Publish the resize-hover so widgets (e.g. Split) can highlight the
+        // hovered divider during render; derive the OSC 22 cursor from it.
+        set_resize_hover(resize_hover.map(|(id, local, _)| (id, local)));
+        let mouse_pointer = resize_hover
+            .map(|(_, _, shape)| shape)
+            .unwrap_or(MousePointerShape::Default);
         let popups = &self.popups;
         with_render_io(|renderer, buffer, buf| {
             buf.clear();
@@ -2781,6 +2857,18 @@ impl Runtime {
                     ctx.last_cursor_style = new_style;
                 });
             }
+
+            // Mouse pointer shape (OSC 22), emitted independently of the text
+            // cursor. Re-assert any non-default shape on every paint: some
+            // terminals (e.g. Ghostty) reset the pointer to default on mouse
+            // motion, so a set-once-on-change emit would be reverted and never
+            // restored. The idle default is still emitted only on change.
+            let prev_pointer = with_ctx(|ctx| ctx.last_mouse_pointer_shape);
+            if prev_pointer != Some(mouse_pointer) || mouse_pointer != MousePointerShape::Default {
+                output::set_mouse_pointer_shape(buf, mouse_pointer);
+                with_ctx_mut(|ctx| ctx.last_mouse_pointer_shape = Some(mouse_pointer));
+            }
+
             buffer.write_all(buf.as_bytes())?;
             buffer.flush()?;
             Ok(())

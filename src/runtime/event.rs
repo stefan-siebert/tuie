@@ -43,10 +43,16 @@ impl RuntimeEvent {
 
     /// Builds an input event positioned at the center of cell `pos`.
     pub fn input_at(chord: Chord, pos: Vec2<i32>) -> Self {
+        Self::input_at_count(chord, pos, 1)
+    }
+
+    /// Builds an input event at the center of cell `pos` with an explicit click
+    /// `count` (e.g. `2` for a double-click).
+    pub fn input_at_count(chord: Chord, pos: Vec2<i32>, count: u8) -> Self {
         RuntimeEvent::Input(InputEvent {
             chord,
             pos: pos.map(|v| v as f32 + 0.5),
-            count: 1,
+            count,
         })
     }
 }
