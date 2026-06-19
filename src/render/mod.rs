@@ -885,12 +885,22 @@ impl GridRenderer {
     }
 
     /// Resizes both cell buffers to `size`.
+    ///
+    /// Forces a full repaint of the next frame *in place* by marking every cell
+    /// of the previous buffer `INVALID` — the diff in [`render_with`] emits any
+    /// cell whose `prev` is `INVALID` regardless of equality, so background
+    /// cells are repainted too. This deliberately does NOT set `full_dirty`:
+    /// `full_dirty` makes `paint_terminal` emit `\x1b[2J` (erase display), which
+    /// blanks the screen before the repaint. That clear+repaint is wrapped in a
+    /// DEC 2026 synchronized update and is invisible on terminals that support
+    /// it, but macOS Terminal.app ignores DEC 2026 and shows the intermediate
+    /// blank frame — i.e. flicker on every resize. Repainting in place avoids
+    /// the blank frame entirely, on every terminal.
     pub fn resize(&mut self, size: Vec2<u16>) {
         let state = &mut self.state;
         if state.size == size {
             return;
         }
-        state.full_dirty = true;
         state.size = size;
         state.cells_stride = size.x.saturating_add(SCRATCH_SLACK);
         state.cells_height = size.y.saturating_add(SCRATCH_SLACK);
@@ -910,6 +920,9 @@ impl GridRenderer {
                 state.cells_stride as usize * state.cells_height as usize,
                 GridCell::DEFAULT,
             );
+        for cell in &mut state.cells.1 {
+            cell.flags.set(GridCellFlags::INVALID, true);
+        }
     }
 
     pub(crate) fn render_to_queue(
