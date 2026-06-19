@@ -808,29 +808,98 @@ impl SplitChild {
             cap.saturating_sub(already)
         };
 
-        for (i, c) in children.iter().enumerate() {
+        // Phase 1: move each child toward its preferred basis, distributed
+        // PROPORTIONALLY by flex weight rather than first-come. A sequential
+        // pass would hand the whole budget to the first child until it reached
+        // its preferred, which makes equal-flex siblings (e.g. the two file
+        // panes) resize asymmetrically on a terminal size change — one pane
+        // grows while the other stays put. Looping re-distributes the remainder
+        // once a child hits its preferred cap or its room limit.
+        loop {
             if budget == 0 {
                 break;
             }
-            let pref = c.effective_preferred(axis, gap, padding, base_size);
-            if pref == u16::MAX {
-                continue;
+            let mut weights = vec![0u32; n];
+            let mut caps = vec![0u16; n]; // remaining headroom toward preferred
+            let mut weight_sum: u32 = 0;
+            for (i, c) in children.iter().enumerate() {
+                let pref = c.effective_preferred(axis, gap, padding, base_size);
+                if pref == u16::MAX {
+                    continue;
+                }
+                let cur = c.size_along(axis);
+                let already = deltas[i].unsigned_abs() as u16;
+                let toward_pref = if growing {
+                    pref.saturating_sub(cur)
+                } else {
+                    cur.saturating_sub(pref)
+                };
+                let cap = toward_pref.saturating_sub(already).min(room_of(c, already));
+                if cap == 0 {
+                    continue;
+                }
+                weights[i] = c.effective_flex().max(1) as u32;
+                caps[i] = cap;
+                weight_sum = weight_sum.saturating_add(weights[i]);
             }
-            let cur = c.size_along(axis);
-            let toward_pref = if growing {
-                pref.saturating_sub(cur)
-            } else {
-                cur.saturating_sub(pref)
-            };
-            if toward_pref == 0 {
-                continue;
+            if weight_sum == 0 {
+                break;
             }
-            let take = budget.min(toward_pref).min(room_of(c, 0));
-            if take == 0 {
-                continue;
+
+            let amount = budget as u64;
+            let mut shares = vec![0u64; n];
+            let mut placed: u64 = 0;
+            let mut remainders: Vec<(usize, u64)> = Vec::with_capacity(n);
+            for i in 0..n {
+                if weights[i] == 0 {
+                    continue;
+                }
+                let numerator = weights[i] as u64 * amount;
+                let floor = numerator / weight_sum as u64;
+                let capped = floor.min(caps[i] as u64);
+                shares[i] = capped;
+                placed += capped;
+                if capped == floor {
+                    remainders.push((i, numerator - floor * weight_sum as u64));
+                }
             }
-            deltas[i] = if growing { take as i32 } else { -(take as i32) };
-            budget -= take;
+            let mut spare = amount - placed;
+            // Break remainder ties by projected size so a single leftover column
+            // (the common case when slowly dragging the terminal one cell at a
+            // time) lands on the SMALLER pane when growing — or the larger when
+            // shrinking — instead of always the first child. Without this, equal
+            // panes drift apart one column per resize event because floor(1/2)=0
+            // for both and the lone remainder always falls to index 0.
+            remainders.sort_unstable_by(|a, b| {
+                b.1.cmp(&a.1).then_with(|| {
+                    let pa = children[a.0].size_along(axis) as i64 + shares[a.0] as i64;
+                    let pb = children[b.0].size_along(axis) as i64 + shares[b.0] as i64;
+                    if growing { pa.cmp(&pb) } else { pb.cmp(&pa) }
+                })
+            });
+            for &(idx, _) in &remainders {
+                if spare == 0 {
+                    break;
+                }
+                if shares[idx] < caps[idx] as u64 {
+                    shares[idx] += 1;
+                    spare -= 1;
+                }
+            }
+
+            let mut consumed: u64 = 0;
+            for i in 0..n {
+                if shares[i] == 0 {
+                    continue;
+                }
+                let s = shares[i] as i32;
+                deltas[i] += if growing { s } else { -s };
+                consumed += shares[i];
+            }
+            if consumed == 0 {
+                break;
+            }
+            budget -= consumed as u16;
         }
 
         while budget > 0 {
@@ -882,7 +951,16 @@ impl SplitChild {
             }
 
             let mut spare = amount - placed;
-            remainders.sort_unstable_by(|a, b| b.1.cmp(&a.1));
+            // Tie-break a lone leftover column by projected size (smaller pane
+            // when growing, larger when shrinking) so slow one-cell-at-a-time
+            // resizes stay balanced instead of always feeding the first child.
+            remainders.sort_unstable_by(|a, b| {
+                b.1.cmp(&a.1).then_with(|| {
+                    let pa = children[a.0].size_along(axis) as i64 + shares[a.0] as i64;
+                    let pb = children[b.0].size_along(axis) as i64 + shares[b.0] as i64;
+                    if growing { pa.cmp(&pb) } else { pb.cmp(&pa) }
+                })
+            });
             for &(idx, _) in &remainders {
                 if spare == 0 {
                     break;
