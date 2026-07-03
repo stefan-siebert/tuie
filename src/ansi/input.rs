@@ -258,8 +258,11 @@ impl Parser {
                 b'u' => self.parse_csi_u(body),
                 b'M' => self.parse_rxvt_mouse(body),
                 b't' => self.parse_window_size(body),
-                b'R' => {}
-                b'A' | b'B' | b'C' | b'D' | b'F' | b'H' | b'P' | b'Q' | b'S' => {
+                // FORK PATCH (Elane): `R` normally swallowed here as a
+                // cursor-position report (CPR). Elane never requests CPR, so
+                // route it to `parse_modifier_key` to decode Ctrl+F3
+                // (`CSI 1;m R`). Re-apply on upstream merges.
+                b'A' | b'B' | b'C' | b'D' | b'F' | b'H' | b'P' | b'Q' | b'R' | b'S' => {
                     self.parse_modifier_key(body, last)
                 }
                 _ => {}
@@ -359,6 +362,11 @@ impl Parser {
             b'H' => Key::Home,
             b'P' => Key::F(1),
             b'Q' => Key::F(2),
+            // FORK PATCH (Elane): decode Ctrl+F3 (`CSI 1;m R`). Normally omitted
+            // because `CSI n;m R` collides with a cursor-position report (CPR),
+            // but Elane never requests CPR, so there is no ambiguity here.
+            // Re-apply on upstream merges.
+            b'R' => Key::F(3),
             b'S' => Key::F(4),
             _ => return,
         };
@@ -724,4 +732,22 @@ fn parse_rgb_spec(s: &str) -> Option<(u8, u8, u8)> {
         return None;
     }
     Some((r, g, b))
+}
+
+#[cfg(test)]
+mod sort_key_tests {
+    use super::*;
+
+    #[test]
+    fn ctrl_f3_decodes_from_csi_1_5_r() {
+        let mut parser = Parser::new();
+        parser.feed_all(b"\x1b[1;5R");
+        match parser.next() {
+            Some(ParsedEvent::Key(Chord { trigger: Trigger::Key(key), modifiers })) => {
+                assert_eq!(key, Key::F(3));
+                assert!(modifiers.has(Modifier::Ctrl));
+            }
+            other => panic!("expected Ctrl+F3, got {other:?}"),
+        }
+    }
 }
