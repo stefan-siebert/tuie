@@ -6,7 +6,11 @@ use unicode_segmentation::UnicodeSegmentation;
 
 struct TabIterator<'a> {
     tabstop: u8,
-    col: u8,
+    /// Display column. u64, NOT u8: a u8 silently wrapped at 256, so any
+    /// logical line wider than 255 columns miscomputed tab stops for every
+    /// tabstop that doesn't divide 256 — and every consumer comparing
+    /// columns (horizontal scroll, cursor math) diverged from the text.
+    col: u64,
     offset: usize,
     pending: Option<TabIteratorResult<'a>>,
     iter: Option<std::str::Split<'a, char>>,
@@ -20,13 +24,13 @@ struct TabIteratorResult<'a> {
 }
 
 impl<'a> TabIterator<'a> {
-    fn new(col: u8, tabstop: Option<u8>, text: &'a str) -> Self {
+    fn new(col: u64, tabstop: Option<u8>, text: &'a str) -> Self {
         if let Some(tabstop) = tabstop {
             let mut iter = text.split('\t');
             let content = iter.next().unwrap();
             let width = tuie::display_width(content) as u64;
             Self {
-                col: col.wrapping_add(width as u8),
+                col: col + width,
                 tabstop,
                 offset: content.len() + 1,
                 pending: Some(TabIteratorResult {
@@ -40,7 +44,7 @@ impl<'a> TabIterator<'a> {
         } else {
             let width = tuie::display_width(text) as u64;
             Self {
-                col: col.wrapping_add(width as u8),
+                col: col + width,
                 tabstop: 0,
                 offset: 0,
                 pending: Some(TabIteratorResult {
@@ -62,15 +66,14 @@ impl<'a> Iterator for TabIterator<'a> {
             return self.pending.take();
         };
         let upcoming = iter.next().map(|content| {
-            let tab_size = self.tabstop - self.col % self.tabstop;
+            // tab_size is in 1..=tabstop, so the u8 leftpad below is exact.
+            let tab_size = self.tabstop as u64 - self.col % self.tabstop as u64;
             let width = tuie::display_width(content) as u64;
-            self.col = self.col
-                .wrapping_add(width as u8)
-                .wrapping_add(tab_size);
+            self.col = self.col + width + tab_size;
             let offset = self.offset;
             self.offset += content.len() + 1;
             TabIteratorResult {
-                leftpad: tab_size,
+                leftpad: tab_size as u8,
                 content,
                 width,
                 offset,
