@@ -417,6 +417,19 @@ impl List {
         true
     }
 
+    /// Sets the cross-axis scroll offset in cells (clamped to the content).
+    /// Public counterpart of the internal wheel/drag handling, for hosts doing
+    /// keyboard ensure-visible on the cross axis (`ensure_visible` only
+    /// reveals whole items along the main axis).
+    pub fn set_cross_scroll_offset(&mut self, offset: u32) {
+        self.apply_cross_scroll(offset);
+    }
+
+    /// Current cross-axis scroll offset in cells.
+    pub fn cross_scroll_offset(&self) -> u32 {
+        self.scroll.cross_scroll_offset
+    }
+
     fn reposition_items(&mut self) {
         let a = self.orientation;
         let cross = a.flip();
