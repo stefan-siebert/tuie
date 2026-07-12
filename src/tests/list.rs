@@ -319,3 +319,42 @@ fn pending_page_blocks_scroll_until_loaded() {
         "item 19 ",
     ]);
 }
+
+/// Mimics the Change-Dir dialog's search jump: the host shrinks the item
+/// count and calls `ensure_visible` in the same event phase (no layout in
+/// between). The reveal must survive the shrink.
+#[test]
+fn ensure_visible_right_after_shrink_scrolls() {
+    let mut list = make_list(1000);
+    let mut term = Emulator::new(&mut *list, Vec2::new(8, 4));
+    list.ensure_visible(500);
+    term.update(&mut *list, &[]);
+    assert!(list.get_visible_range().contains(&500));
+
+    list.set_item_count(30);
+    list.invalidate_all();
+    list.ensure_visible(25);
+    term.update(&mut *list, &[]);
+    let visible = list.get_visible_range();
+    assert!(visible.contains(&25), "expected 25 in visible range, got {visible:?}");
+}
+
+/// A host-driven cross-axis reveal right after `set_item_count` (which resets
+/// the cached cross content size) must not be clamped away — the clamp can
+/// only be valid after the next layout re-measured the items.
+#[test]
+fn cross_scroll_offset_survives_set_item_count() {
+    let mut list = List::new();
+    list.set_renderer((), |_: &mut (), idx: usize| -> Option<Box<dyn Widget>> {
+        Some(Text::new().content(format!("{:<39}x{idx}", "wide")) as Box<dyn Widget>)
+    });
+    let mut list = list.item_count(5).cross_scroll(Scrollbar::AutoHide);
+    let mut term = Emulator::new(&mut *list, Vec2::new(8, 4));
+    term.update(&mut *list, &[]);
+
+    list.set_item_count(5);
+    list.invalidate_all();
+    list.set_cross_scroll_offset(20);
+    term.update(&mut *list, &[]);
+    assert_eq!(list.cross_scroll_offset(), 20, "cross reveal clamped away");
+}

@@ -417,12 +417,25 @@ impl List {
         true
     }
 
-    /// Sets the cross-axis scroll offset in cells (clamped to the content).
-    /// Public counterpart of the internal wheel/drag handling, for hosts doing
-    /// keyboard ensure-visible on the cross axis (`ensure_visible` only
-    /// reveals whole items along the main axis).
+    /// Sets the cross-axis scroll offset in cells. Public counterpart of the
+    /// internal wheel/drag handling, for hosts doing keyboard ensure-visible
+    /// on the cross axis (`ensure_visible` only reveals whole items along the
+    /// main axis).
+    ///
+    /// Unlike the interactive path this does NOT clamp eagerly: hosts call it
+    /// right after `set_item_count`, which resets the cached cross content
+    /// size to 0 — an eager clamp would silently drop the reveal. The stored
+    /// offset is clamped by the next layout pass, after `size_items` has
+    /// re-measured the real content width.
     pub fn set_cross_scroll_offset(&mut self, offset: u32) {
-        self.apply_cross_scroll(offset);
+        if self.scroll.cross_mode.is_none() || offset == self.scroll.cross_scroll_offset {
+            return;
+        }
+        self.scroll.cross_scroll_offset = offset;
+        self.reposition_items();
+        self.sync_scrollbars();
+        self.dirty_layout();
+        self.dirty_paint();
     }
 
     /// Current cross-axis scroll offset in cells.
