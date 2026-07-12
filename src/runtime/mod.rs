@@ -298,7 +298,9 @@ type Spawner = Rc<dyn Fn(BoxFuture)>;
 type PanicHook = Box<dyn Fn(&std::panic::PanicHookInfo<'_>) + Send + Sync + 'static>;
 
 enum TaskKind {
-    Timer(std::time::Instant, Box<dyn FnOnce(&mut dyn Widget)>),
+    /// A scheduled callback: fire time, target widget (so the drain can
+    /// resolve popup-hosted targets like `drain_inbox` does), callback.
+    Timer(std::time::Instant, WidgetId, Box<dyn FnOnce(&mut dyn Widget)>),
     SpawnOnce(Box<dyn FnOnce(&mut dyn Widget, Box<dyn std::any::Any>)>),
     SpawnStream(Box<dyn FnMut(&mut dyn Widget, Box<dyn std::any::Any>) -> bool>),
     Quit(Box<dyn FnMut(&mut dyn Write)>),
@@ -639,8 +641,11 @@ pub fn schedule<W: Widget + 'static>(
     with_ctx_mut(|ctx| {
         let task_id = ctx.tasks.push(TaskKind::Timer(
             std::time::Instant::now() + duration,
-            Box::new(move |root: &mut dyn Widget| {
-                if let Some(w) = root.get_widget_mut(id) {
+            id.untyped(),
+            // The drain hands us the tree that contains the target (main root
+            // or a popup's content), so this lookup always resolves.
+            Box::new(move |tree: &mut dyn Widget| {
+                if let Some(w) = tree.get_widget_mut(id) {
                     callback(w);
                 }
             }),
@@ -2436,7 +2441,7 @@ impl Runtime {
     }
 
     fn drain_task_queue(&mut self, root: &mut dyn Widget) -> Option<std::time::Duration> {
-        let mut ready: Vec<Box<dyn FnOnce(&mut dyn Widget)>> = Vec::new();
+        let mut ready: Vec<(WidgetId, Box<dyn FnOnce(&mut dyn Widget)>)> = Vec::new();
         let next = loop {
             let now = std::time::Instant::now();
             let mut next: Option<std::time::Instant> = None;
@@ -2445,13 +2450,13 @@ impl Runtime {
                 let mut i = items.len();
                 while i > 0 {
                     i -= 1;
-                    let TaskKind::Timer(schedule, _) = &items[i].1 else {
+                    let TaskKind::Timer(schedule, _, _) = &items[i].1 else {
                         continue;
                     };
                     if *schedule <= now {
                         let (_, kind) = items.swap_remove(i);
-                        if let TaskKind::Timer(_, callback) = kind {
-                            ready.push(callback);
+                        if let TaskKind::Timer(_, target, callback) = kind {
+                            ready.push((target, callback));
                         }
                     } else {
                         let schedule = *schedule;
@@ -2464,8 +2469,20 @@ impl Runtime {
             if ready.is_empty() {
                 break next;
             }
-            for cb in ready.drain(..) {
-                cb(root);
+            for (target, cb) in ready.drain(..) {
+                // The target may live in an active popup (e.g. a dialog
+                // debouncing its search input) — mirror `drain_inbox`'s
+                // root-then-popups resolution. A target found nowhere is gone;
+                // its callback is dropped, same as an undeliverable `send`.
+                if root.find(target).is_some() {
+                    cb(root);
+                } else if let Some(index) = self
+                    .popups
+                    .iter()
+                    .position(|popup| popup.content.find(target).is_some())
+                {
+                    cb(self.popups[index].content.as_mut());
+                }
             }
         };
         next.map(|instant| {

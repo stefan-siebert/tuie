@@ -81,3 +81,70 @@ fn outside_click_dismisses_nondismissible_popup() {
         term.get_snapshot_text()
     );
 }
+
+// ── schedule() targets inside popups ─────────────────────────────────────────
+
+/// Popup content that arms a zero-delay timer on itself. Regression probe for
+/// timers whose target widget lives in a popup, not the main tree.
+struct TimerProbe {
+    root: Box<Pane>,
+    fired: Rc<RefCell<bool>>,
+    armed: bool,
+}
+
+impl DelegateWidget for TimerProbe {
+    crate::delegate_widget!(root);
+
+    fn override_is_focusable(&self) -> bool {
+        true
+    }
+
+    fn after_before_layout(&mut self) {
+        if !self.armed {
+            self.armed = true;
+            crate::schedule(
+                self.get_id(),
+                std::time::Duration::from_millis(0),
+                |probe: &mut TimerProbe| {
+                    *probe.fired.borrow_mut() = true;
+                },
+            );
+        }
+    }
+}
+
+#[test]
+fn scheduled_timer_fires_on_popup_hosted_widget() {
+    // Regression: drain_task_queue resolved timer targets against the main
+    // tree only, so a schedule() on a popup-hosted widget (e.g. a dialog
+    // debouncing its search input) never fired. It must mirror drain_inbox's
+    // root-then-popups resolution.
+    let mut root = Pane::new().vertical().flex(1).child(Text::new().content("background"));
+    let mut term = Emulator::new(&mut *root, Vec2::new(80, 24));
+
+    let fired = Rc::new(RefCell::new(false));
+    let content = Box::new(TimerProbe {
+        root: Pane::new()
+            .vertical()
+            .min_width(20)
+            .min_height(5)
+            .child(Text::new().content("POPUP")),
+        fired: fired.clone(),
+        armed: false,
+    });
+    crate::open_popup(
+        Popup::new(content as Box<dyn Widget>)
+            .placement(Placement::center())
+            .dismissible_if(false),
+    );
+
+    // First cycle opens the popup and arms the timer in before_layout; the
+    // second drains the (already due) timer.
+    term.update(&mut *root, &[]);
+    term.update(&mut *root, &[]);
+
+    assert!(
+        *fired.borrow(),
+        "a schedule() whose target lives in a popup must fire on that widget"
+    );
+}
