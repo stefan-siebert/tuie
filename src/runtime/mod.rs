@@ -2660,7 +2660,14 @@ impl Runtime {
 
     fn layout(&mut self, root: &mut dyn Widget, viewport_size: Vec2<u16>) {
         for _ in 0..3 {
-            if !needs_layout(root) {
+            // Popup-only dirt must drive the loop too: a popup's content can
+            // be restructured (children cleared/added) without touching the
+            // main root — gating on the root alone would skip the popup
+            // pass below and leave the new children without any layout
+            // (they render as nothing).
+            let popups_need = (0..self.popups.len())
+                .any(|i| needs_layout(&mut *self.popups[i].content));
+            if !needs_layout(root) && !popups_need {
                 break;
             }
             for _ in 0..2 {
