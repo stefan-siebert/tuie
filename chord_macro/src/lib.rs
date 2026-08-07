@@ -114,7 +114,7 @@ fn parse_trigger(expr: syn::Expr) -> Result<Vec<(proc_macro2::TokenStream, bool)
                             tuie::prelude::Trigger::Key(
                                 tuie::prelude::Key::Char(#c)
                             )
-                        ), true)
+                        ), c.is_alphabetic())
                     }
                     Trigger::Key(Key::CharIdent(c)) => {
                         (quote!(
@@ -181,7 +181,7 @@ fn parse_trigger(expr: syn::Expr) -> Result<Vec<(proc_macro2::TokenStream, bool)
                                 tuie::prelude::Trigger::Key(
                                     tuie::prelude::Key::Char(#ch)
                                 )
-                            ), true)
+                            ), false)
                         }
                         Err(e) => {
                             return fail!(&lit_int, "{}", e);
@@ -189,11 +189,12 @@ fn parse_trigger(expr: syn::Expr) -> Result<Vec<(proc_macro2::TokenStream, bool)
                     }
                 }
                 syn::Lit::Char(lit_char) => {
+                    let is_letter = lit_char.value().is_alphabetic();
                     (quote!(
                         tuie::prelude::Trigger::Key(
                             tuie::prelude::Key::Char(#lit_char)
                         )
-                    ), true)
+                    ), is_letter)
                 }
                 _ => {
                     return fail!(&expr_lit, "Expected an integer or char literal");
@@ -384,9 +385,13 @@ fn parse_chord(expr: syn::Expr) -> Result<proc_macro2::TokenStream, proc_macro2:
     let has_shift = mods.iter().any(|m| m & 1 != 0);
     let triggers = parse_trigger(trigger_expr)?;
 
-    if has_shift && triggers.iter().any(|(_, is_char)| *is_char) {
+    // Letter triggers express Shift through their case, so combining them
+    // with an explicit Shift is a contradiction. Non-letter chars (digits,
+    // symbols, Space) DO carry a Shift bit — their shifted symbol is
+    // keyboard-layout-dependent, so `Shift + '1'` is the portable spelling.
+    if has_shift && triggers.iter().any(|(_, is_letter)| *is_letter) {
         let span = mods_expr.as_ref().and_then(find_shift_span).unwrap_or(root_span);
-        return fail!(&span, "Shift cannot be used with char triggers, use uppercase idents like `V` or Char('V') directly");
+        return fail!(&span, "Shift cannot be used with letter triggers, use uppercase idents like `V` or Char('V') directly");
     }
 
     let mods_node = build_mods_node(&mods, root_span);

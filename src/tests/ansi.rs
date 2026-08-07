@@ -163,11 +163,49 @@ fn csi_u_basic() {
     assert_eq!(parse_one(b"\x1B[13u"), key(Key::Enter, no_mods()));
 }
 
+/// Letters fold the reported shifted key into the char and drop Shift
+/// (the chord_macro contract: shiftedness lives in the case).
+#[test]
+fn csi_u_shifted_letter_folds_to_uppercase() {
+    // Ctrl+Shift+I with "report alternate keys": 105 ('i'), alternate 73 ('I').
+    assert_eq!(
+        parse_one(b"\x1B[105:73;6u"),
+        key(Key::Char('I'), no_mods().with(Modifier::Ctrl))
+    );
+    // Disambiguate-only terminal (no alternate reported): fold ourselves.
+    assert_eq!(
+        parse_one(b"\x1B[105;6u"),
+        key(Key::Char('I'), no_mods().with(Modifier::Ctrl))
+    );
+}
+
+/// Non-letter keys keep the layout-portable BASE char and keep Shift —
+/// the shifted symbol (40 = '(') is keyboard-layout-dependent, so folding
+/// it in would make chords like Ctrl+Shift+1 unmatchable.
 #[test]
 fn csi_u_shifted_alternate() {
     assert_eq!(
         parse_one(b"\x1B[57:40;4u"),
-        key(Key::Char('('), no_mods().with(Modifier::Alt))
+        key(
+            Key::Char('9'),
+            no_mods().with(Modifier::Alt).with(Modifier::Shift)
+        )
+    );
+    // Ctrl+Shift+1 (hotdir-set style chord): base '1' + Ctrl + Shift.
+    assert_eq!(
+        parse_one(b"\x1B[49:33;6u"),
+        key(
+            Key::Char('1'),
+            no_mods().with(Modifier::Ctrl).with(Modifier::Shift)
+        )
+    );
+    // Same chord from a disambiguate-only terminal (no alternate field).
+    assert_eq!(
+        parse_one(b"\x1B[49;6u"),
+        key(
+            Key::Char('1'),
+            no_mods().with(Modifier::Ctrl).with(Modifier::Shift)
+        )
     );
 }
 

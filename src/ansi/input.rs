@@ -334,14 +334,41 @@ impl Parser {
             }
         };
 
+        // Shift on character keys. The library contract (enforced by
+        // `chord_macro`'s "Shift cannot be used with char triggers") is that
+        // LETTERS express shiftedness through case: Ctrl+Shift+P is delivered
+        // as Char('P') with the shift bit cleared. Non-letter keys get the
+        // opposite treatment: their shifted symbol is keyboard-layout-
+        // dependent (Shift+2 is '@' on US, '"' on German), so folding it in
+        // made chords like Ctrl+Shift+1 unmatchable. They keep the BASE
+        // character — the layout-portable identity — and keep Shift set.
         if modifiers.has(Modifier::Shift)
-            && let Some(shifted) = code_parts
-                .next()
-                .and_then(parse_u32)
-                .and_then(char::from_u32)
+            && let Key::Char(base) = key
         {
-            key = Key::Char(shifted);
-            modifiers.set(Modifier::Shift, false);
+            let shifted = code_parts.next().and_then(parse_u32).and_then(char::from_u32);
+            match shifted {
+                // Letter: fold the terminal-reported shifted key (kitty
+                // "report alternate keys") into the char.
+                Some(alternate) if alternate.is_alphabetic() => {
+                    key = Key::Char(alternate);
+                    modifiers.set(Modifier::Shift, false);
+                }
+                // Shifted symbol reported (base is a digit/symbol key, or a
+                // letter shifting to a symbol like German ß → '?'): keep the
+                // base char, keep Shift.
+                Some(_) => {}
+                // No alternate reported (terminal speaks only the kitty
+                // disambiguate subset): uppercase letters ourselves so
+                // Ctrl+Shift+I still matches there; non-letters keep Shift.
+                None => {
+                    if base.is_alphabetic() {
+                        if let Some(upper) = base.to_uppercase().next() {
+                            key = Key::Char(upper);
+                        }
+                        modifiers.set(Modifier::Shift, false);
+                    }
+                }
+            }
         }
         self.push_key(key, modifiers);
     }
@@ -617,7 +644,13 @@ impl Parser {
     }
 
     fn push_key(&mut self, key: Key, mut modifiers: Modifiers) {
-        if let Key::Char(_) = key {
+        // Letters carry shiftedness in their case (see `parse_csi_u`), so a
+        // stray Shift bit on them is dropped. Non-letter chars may keep Shift:
+        // it is the only way to express chords like Ctrl+Shift+1, whose
+        // shifted symbol would be keyboard-layout-dependent.
+        if let Key::Char(c) = key
+            && c.is_alphabetic()
+        {
             modifiers.set(Modifier::Shift, false);
         }
         self.out.push_back(ParsedEvent::Key(Chord {
