@@ -946,10 +946,19 @@ impl Widget for List {
             Scrollbar::Visible | Scrollbar::AutoHide => 1,
             Scrollbar::Hidden => 0,
         };
-        let items_min_cross = self.items.iter()
-            .map(|item| item.widget.get_layout().constraints.min_size[cross])
-            .max()
-            .unwrap_or(0);
+        // With cross scrolling on, an item wider than the viewport scrolls
+        // instead of widening the list, so its width must not travel up as a
+        // minimum — that would inflate every ancestor (and, inside a popup,
+        // resize the card on every content change). Same rule `Pane` applies
+        // to its own scrollable axes.
+        let items_min_cross = if self.scroll.cross_mode.is_some() {
+            0
+        } else {
+            self.items.iter()
+                .map(|item| item.widget.get_layout().constraints.min_size[cross])
+                .max()
+                .unwrap_or(0)
+        };
         let mut min_size = Vec2::of(0u16);
         min_size[cross] = items_min_cross
             .saturating_add(border)

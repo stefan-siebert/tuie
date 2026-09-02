@@ -358,3 +358,35 @@ fn cross_scroll_offset_survives_set_item_count() {
     term.update(&mut *list, &[]);
     assert_eq!(list.cross_scroll_offset(), 20, "cross reveal clamped away");
 }
+
+/// A cross-scrolling list must not hand its widest item's width up as a
+/// minimum — an item too wide for the viewport scrolls instead. Elane's
+/// Change-Dir card (a shrink-wrapped popup around such a list) was resized on
+/// every content change by exactly that minimum, and once it outgrew the
+/// terminal the tree was painted past the right edge.
+#[test]
+fn cross_scrolling_list_does_not_demand_its_widest_item() {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    let item_width = Rc::new(Cell::new(4usize));
+    let mut list = List::new();
+    list.set_renderer(item_width.clone(), |width: &mut Rc<Cell<usize>>, _idx: usize| -> Option<Box<dyn Widget>> {
+        Some(Text::new().content("x".repeat(width.get())) as Box<dyn Widget>)
+    });
+    let mut list_id = WidgetId::EMPTY;
+    let list = list.item_count(5).cross_scroll(Scrollbar::AutoHide).id(&mut list_id);
+    let mut pane = Pane::new().vertical().child(list as Box<dyn Widget>);
+    let mut term = Emulator::new(&mut *pane, Vec2::new(20, 6));
+    term.update(&mut *pane, &[]);
+
+    let min_of = |pane: &Box<Pane>| pane.get_widget(list_id).map(|l| l.get_layout().constraints.min_size.x).unwrap_or(0);
+    let narrow = min_of(&pane);
+
+    item_width.set(200);
+    if let Some(list) = pane.get_widget_mut(list_id) {
+        list.invalidate_all();
+    }
+    term.update(&mut *pane, &[]);
+    assert_eq!(min_of(&pane), narrow, "a 200-cell item widened the list's minimum");
+}
