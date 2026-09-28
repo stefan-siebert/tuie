@@ -156,3 +156,18 @@ fn get_str_returns_underlying_text() {
     assert_eq!(text.get_str(), "payload");
     assert_eq!(text.len(), 7);
 }
+
+#[test]
+fn c0_control_renders_as_caret_notation() {
+    let mut root = Pane::new().children([Text::new().content("a\u{1b}b")]);
+    let term = Emulator::new(&mut *root, Vec2::new(5, 1));
+    term.assert_lines(["a^[b "]);
+}
+
+#[test]
+fn c1_control_never_reaches_the_terminal_raw() {
+    // U+009B is the 8-bit CSI: raw, it would open an escape sequence.
+    let mut root = Pane::new().children([Text::new().content("a\u{9b}b\u{85}c")]);
+    let term = Emulator::new(&mut *root, Vec2::new(8, 1));
+    term.assert_lines(["a~[b~Ec "]);
+}

@@ -338,8 +338,8 @@ impl<'a> RowWriter<'a> {
             return;
         }
         let control_buf;
-        let glyph = if glyph.len() == 1 && glyph.as_bytes()[0].is_ascii_control() {
-            control_buf = [b'^', ((glyph.as_bytes()[0] as u32 + 64) % 128) as u8];
+        let glyph = if let Some(buf) = glyph.chars().find_map(control_notation) {
+            control_buf = buf;
             unsafe { std::str::from_utf8_unchecked(&control_buf) }
         } else {
             glyph
@@ -422,8 +422,7 @@ impl CellWriter<'_> {
     /// Writes a single-char glyph at this cell.
     #[inline]
     pub fn glyph(&mut self, c: char) -> &mut Self {
-        if c.is_ascii_control() {
-            let buf = [b'^', ((u32::from(c) + 64) % 128) as u8];
+        if let Some(buf) = control_notation(c) {
             let s = unsafe { std::str::from_utf8_unchecked(&buf) };
             return unsafe { self.grapheme_unchecked(true, s) };
         }
@@ -451,10 +450,14 @@ impl CellWriter<'_> {
     }
 
     /// Writes a multi-byte grapheme at this cell.
+    ///
+    /// A cluster containing a control character is drawn as that control's
+    /// [`control_notation`] — `\r\n` is one cluster, and a C1 control is two
+    /// bytes, so checking single bytes alone would hand both to the terminal raw.
     #[inline]
     pub fn grapheme(&mut self, s: &str) -> &mut Self {
-        if s.len() == 1 && s.as_bytes()[0].is_ascii_control() {
-            return self.glyph(s.as_bytes()[0] as char);
+        if let Some(c) = s.chars().find(|c| control_notation(*c).is_some()) {
+            return self.glyph(c);
         }
         let wide = grapheme_width(s) > 1;
         unsafe { self.grapheme_unchecked(wide, s) }
@@ -700,6 +703,23 @@ fn glyph_dirty_cols(glyph: &str, is_wide: bool, current: i32) -> i32 {
     }
 }
 
+/// Two printable ASCII cells standing in for a control character, or `None`
+/// for any other char.
+///
+/// C0 and DEL use caret notation (`^[`, `^?`). C1 (U+0080–U+009F) has no
+/// common two-cell form, so it gets `~` plus the letter of its 7-bit escape
+/// equivalent (U+009B CSI → `~[`, U+0085 NEL → `~E`). Either way the control
+/// never reaches the terminal raw: an 8-bit CSI would open an escape sequence
+/// just like ESC does.
+fn control_notation(c: char) -> Option<[u8; 2]> {
+    let code = u32::from(c);
+    match code {
+        0x00..=0x1F | 0x7F => Some([b'^', ((code + 64) % 128) as u8]),
+        0x80..=0x9F => Some([b'~', (code - 0x40) as u8]),
+        _ => None,
+    }
+}
+
 /// Returns the display cell width of a single grapheme cluster.
 pub fn grapheme_width(grapheme: &str) -> usize {
     let bytes = grapheme.as_bytes();
@@ -712,7 +732,7 @@ pub fn grapheme_width(grapheme: &str) -> usize {
     }
     if grapheme.chars().any(|ch| {
         ch == '\u{FE0F}'
-            || ch.is_ascii_control()
+            || ch.is_control()
             || unicode_display_width::is_double_width(ch)
     }) {
         2

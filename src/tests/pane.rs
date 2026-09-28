@@ -437,3 +437,17 @@ fn child_keeps_its_own_reverse() {
     assert!(style.has_reverse());
     assert_eq!(style.get_fg(), Some(Color::Indexed(4)));
 }
+
+#[test]
+fn title_with_crlf_cluster_renders_visibly() {
+    // `\r\n` is a single grapheme cluster; `Region::write` hands it to the
+    // cell whole, so a check on single bytes alone let it reach the terminal.
+    let mut root = Pane::new()
+        .bordered()
+        .title("a\r\nb")
+        .children([Text::new().content("x")]);
+    let term = Emulator::new(&mut *root, Vec2::new(10, 3));
+    let snap = term.get_snapshot_text();
+    let top = snap.lines().next().unwrap_or_default();
+    assert!(top.contains("a^Mb"), "expected caret notation in title, got:\n{snap}");
+}
