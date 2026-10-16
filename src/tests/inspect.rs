@@ -164,3 +164,69 @@ fn focus_chain_says_when_a_popup_has_the_focus() {
     assert!(chain.in_popup, "focus is in the card: {chain:?}");
     assert_eq!(chain.names.first().copied(), Some("FocusableCard"));
 }
+
+fn find<'a>(
+    elements: &'a [inspect::ElementInfo],
+    test_id: &str,
+) -> Option<&'a inspect::ElementInfo> {
+    elements.iter().find_map(|element| {
+        if element.test_id.as_deref() == Some(test_id) {
+            Some(element)
+        } else {
+            find(&element.children, test_id)
+        }
+    })
+}
+
+#[test]
+fn element_tree_carries_test_ids_rects_and_text() {
+    let mut root = Pane::new().vertical().children([
+        Text::new().content("first row").test_id("row.first") as Box<dyn Widget>,
+        Text::new().content("second").test_id("row.second") as Box<dyn Widget>,
+    ]);
+    let _term = Emulator::new(&mut *root, Vec2::new(20, 4));
+
+    let tree = inspect::element_tree(&*root);
+    let second = find(&tree, "row.second").unwrap_or_else(|| panic!("no row.second in {tree:?}"));
+    assert_eq!(second.rect.pos.y, 1);
+    assert_eq!(second.popup, None);
+    let text = inspect::text_in(second.rect);
+    assert_eq!(text.first().map(|row| row.trim_end()), Some("second"));
+}
+
+#[test]
+fn popups_follow_the_main_tree_in_the_element_tree() {
+    let mut root = Pane::new()
+        .vertical()
+        .child(Text::new().content("background"));
+    let mut term = Emulator::new(&mut *root, Vec2::new(40, 10));
+    let card = Pane::new()
+        .vertical()
+        .min_width(10)
+        .min_height(3)
+        .test_id("card")
+        .child(Text::new().content("CARD"));
+    tuie::open_popup(Popup::new(card as Box<dyn Widget>).placement(Placement::center()));
+    term.update(&mut *root, &[]);
+
+    let tree = inspect::element_tree(&*root);
+    assert_eq!(tree.len(), 2, "main tree + one popup: {tree:?}");
+    let card = find(&tree, "card").unwrap_or_else(|| panic!("no card in {tree:?}"));
+    assert_eq!(card.popup, Some(0));
+    assert!(
+        inspect::text_in(card.rect)
+            .iter()
+            .any(|row| row.contains("CARD"))
+    );
+}
+
+#[test]
+fn text_in_counts_a_wide_glyph_as_two_cells() {
+    let mut root = Pane::new().vertical().child(Text::new().content("ab界cd"));
+    let _term = Emulator::new(&mut *root, Vec2::new(10, 1));
+    // Cells: a b 界 界 c d — the rect from cell 4 starts at "c".
+    let tail = inspect::text_in(Rect::new(Vec2::new(4, 0), Vec2::new(2, 1)));
+    assert_eq!(tail, vec!["cd".to_string()]);
+    let whole = inspect::text_in(Rect::new(Vec2::new(0, 0), Vec2::new(6, 1)));
+    assert_eq!(whole, vec!["ab界cd".to_string()]);
+}

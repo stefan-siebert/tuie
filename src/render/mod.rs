@@ -1147,6 +1147,36 @@ impl GridRenderer {
         }
     }
 
+    /// The text of the most recently flushed frame inside `rect`, one string
+    /// per row, cell-exact: a wide glyph counts as the two cells it covers,
+    /// and a rect that starts on the second half of one reads a blank there.
+    pub(crate) fn text_in(&self, rect: Rect<i32, u16>) -> Vec<String> {
+        let cells = &self.state.cells.1;
+        let graphemes = &self.state.graphemes.1;
+        let size = self.state.size;
+        let stride = self.state.cells_stride as usize;
+        let clamp = |value: i32, limit: u16| value.clamp(0, i32::from(limit)) as u16;
+        let left = clamp(rect.pos.x, size.x);
+        let right = clamp(rect.pos.x + i32::from(rect.size.x), size.x);
+        let top = clamp(rect.pos.y, size.y);
+        let bottom = clamp(rect.pos.y + i32::from(rect.size.y), size.y);
+        let mut rows = Vec::with_capacity(usize::from(bottom.saturating_sub(top)));
+        for y in top..bottom {
+            let mut row = String::new();
+            let mut x = left;
+            while x < right {
+                let Some(cell) = cells.get(usize::from(y) * stride + usize::from(x)) else {
+                    break;
+                };
+                let glyph = cell.glyph(graphemes);
+                row.push_str(if glyph.is_empty() { " " } else { glyph });
+                x += if cell.flags.get(GridCellFlags::WIDE) { 2 } else { 1 };
+            }
+            rows.push(row);
+        }
+        rows
+    }
+
     /// Returns the most recently flushed frame as a [`StyledString`].
     pub fn get_snapshot(&self) -> StyledString {
         let cells = &self.state.cells.1;

@@ -1256,6 +1256,11 @@ pub(crate) fn get_emulator_snapshot() -> crate::render::style::StyledString {
     with_ctx(|ctx| ctx.renderer.get_snapshot())
 }
 
+/// The text of the most recently rendered frame inside `rect`, row by row.
+pub(crate) fn frame_text_in(rect: Rect<i32, u16>) -> Vec<String> {
+    with_ctx(|ctx| ctx.renderer.text_in(rect))
+}
+
 /// Returns the cursor from the most recently rendered emulator frame.
 pub(crate) fn get_emulator_cursor() -> Option<(CursorShape, Vec2<i32>)> {
     with_ctx(|ctx| ctx.emulator_cursor)

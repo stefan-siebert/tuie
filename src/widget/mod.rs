@@ -138,6 +138,11 @@ impl<T: ?Sized> WidgetId<T> {
     /// A sentinel [`WidgetId`] representing no widget.
     pub const EMPTY: Self = Self(0, PhantomData);
 
+    /// The raw id: unique within the process, not stable across runs.
+    pub fn as_u64(self) -> u64 {
+        self.0
+    }
+
     /// Returns an untyped [`WidgetId`] over `dyn Widget`.
     pub fn untyped(self) -> WidgetId {
         WidgetId(self.0, PhantomData)
@@ -472,6 +477,9 @@ pub struct Layout {
     pub constraints: Constraints,
     pub(crate) flow_layout: FlowSlot,
     pub(crate) flow_measure: Cell<FlowMeasureCache>,
+    /// A stable name for tools that find widgets from outside — an inspector,
+    /// a test. Not shown, not used by layout; see [`WidgetMethods::test_id`].
+    pub(crate) test_id: Option<Box<str>>,
 }
 
 /// Min, max, and preferred sizes a widget reports to its parent.
@@ -593,7 +601,18 @@ impl Layout {
                 }; FLOW_MEASURE_CACHE_SIZE],
                 len: 0,
             }),
+            test_id: None,
         }
+    }
+
+    /// The widget's test id, if it was given one.
+    pub fn get_test_id(&self) -> Option<&str> {
+        self.test_id.as_deref()
+    }
+
+    /// Gives the widget a test id, or takes it away.
+    pub fn set_test_id(&mut self, test_id: Option<Box<str>>) {
+        self.test_id = test_id;
     }
 
     pub(crate) fn flow_measure_find(&self, input_size: Vec2<u16>) -> Option<Vec2<u16>> {
@@ -1578,6 +1597,17 @@ pub trait WidgetMethods: Widget {
         Self: Sized,
     {
         *slot = self.get_id();
+        self
+    }
+
+    /// Builder: gives the widget a stable name for tools that look for it
+    /// from outside — the inspector's `#test-id`, a test's lookup. Widget ids
+    /// change from run to run; a test id says which widget this is.
+    fn test_id(mut self: Box<Self>, test_id: impl Into<Box<str>>) -> Box<Self>
+    where
+        Self: Sized,
+    {
+        self.get_layout_mut().set_test_id(Some(test_id.into()));
         self
     }
 

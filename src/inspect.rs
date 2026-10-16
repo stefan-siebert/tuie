@@ -216,3 +216,85 @@ pub fn focus_chain(root: &dyn Widget) -> FocusChain {
     })
     .unwrap_or_default()
 }
+
+/// The text of the last painted frame inside `rect` (window cells), one
+/// string per row, cell-exact.
+pub fn text_in(rect: Rect<i32, u16>) -> Vec<String> {
+    crate::runtime::frame_text_in(rect)
+}
+
+/// One widget as an inspector sees it.
+#[derive(Clone, Debug)]
+pub struct ElementInfo {
+    /// The widget id: unique within the process, not stable across runs.
+    pub id: u64,
+    /// [`Widget::get_name`].
+    pub name: &'static str,
+    /// [`WidgetMethods::test_id`]: stable, set by the app.
+    pub test_id: Option<String>,
+    /// Outer rect in window cells.
+    pub rect: Rect<i32, u16>,
+    pub focusable: bool,
+    /// On the focus chain; the last widget on it is the focused one.
+    pub in_focus_chain: bool,
+    pub focused: bool,
+    /// Index of the popup this widget lives in, bottom first; `None` for the
+    /// main tree. A higher index is painted over a lower one.
+    pub popup: Option<usize>,
+    pub children: Vec<ElementInfo>,
+}
+
+/// The widget tree as laid out in the last frame: the main tree, then every
+/// open popup's content, bottom first. Widgets with an empty rect are left
+/// out with everything below them — nothing of them is on screen. Empty in
+/// the middle of a tick, where the popups are borrowed.
+pub fn element_tree(root: &dyn Widget) -> Vec<ElementInfo> {
+    let chain = crate::get_focus_chain();
+    let focused = chain.last().copied();
+    let describe =
+        |widget: &dyn Widget, popup: Option<usize>| describe_widget(widget, popup, &chain, focused);
+    let mut roots: Vec<ElementInfo> = describe(root, None).into_iter().collect();
+    if let Some(popups) = crate::runtime::with_popup_contents(|contents| {
+        contents
+            .iter()
+            .enumerate()
+            .filter_map(|(index, content)| describe(*content, Some(index)))
+            .collect::<Vec<_>>()
+    }) {
+        roots.extend(popups);
+    }
+    roots
+}
+
+fn describe_widget(
+    widget: &dyn Widget,
+    popup: Option<usize>,
+    chain: &[WidgetId],
+    focused: Option<WidgetId>,
+) -> Option<ElementInfo> {
+    let rect = widget.get_rect();
+    if rect.size.x == 0 || rect.size.y == 0 {
+        return None;
+    }
+    let id = widget.get_identity();
+    let mut children = Vec::new();
+    widget.each_child(
+        &mut |child| {
+            if let Some(info) = describe_widget(child, popup, chain, focused) {
+                children.push(info);
+            }
+        },
+        Sign::Positive,
+    );
+    Some(ElementInfo {
+        id: id.as_u64(),
+        name: widget.get_name(),
+        test_id: widget.get_layout().get_test_id().map(str::to_string),
+        rect,
+        focusable: widget.is_focusable(),
+        in_focus_chain: chain.contains(&id),
+        focused: focused == Some(id),
+        popup,
+        children,
+    })
+}
