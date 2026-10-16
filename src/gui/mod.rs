@@ -323,6 +323,7 @@ impl GuiState {
             chord: Chord::new(Trigger::MouseSmoothScroll(dir, delta_cells.abs()), self.modifiers),
             pos: self.pack_mouse_pos(),
             count: 1,
+            is_repeat: false,
         }));
     }
 
@@ -598,6 +599,7 @@ impl ApplicationHandler for GuiState {
                         chord,
                         pos: self.pack_mouse_pos(),
                         count: 1,
+                        is_repeat: key_event.repeat,
                     }));
                 }
             }
@@ -643,6 +645,7 @@ impl ApplicationHandler for GuiState {
                         chord: Chord::new(trigger, self.modifiers),
                         pos: self.pack_mouse_pos(),
                         count,
+                        is_repeat: false,
                     }));
                 }
             }
@@ -685,6 +688,7 @@ impl ApplicationHandler for GuiState {
                     chord: Chord::new(trigger, self.modifiers),
                     pos: self.pack_mouse_pos(),
                     count: self.click_count,
+                    is_repeat: false,
                 }));
             }
             WindowEvent::MouseWheel { delta, phase, .. } => {

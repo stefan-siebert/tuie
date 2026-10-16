@@ -37,6 +37,7 @@ fn mouse_down(pos: Vec2<i32>) -> RuntimeEvent {
         chord: Chord::new(Trigger::MouseDown(MouseButton::Left), Modifiers::new()),
         pos: pos.map(|v| v as f32),
         count: 1,
+        is_repeat: false,
     })
 }
 

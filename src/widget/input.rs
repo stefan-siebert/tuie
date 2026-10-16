@@ -11,7 +11,16 @@ pub struct InputEvent {
     /// Key or mouse [`Chord`] that triggered the event.
     pub chord: Chord,
     /// Repeat count. One for the first press, increasing on subsequent repeats.
+    /// Counted by time (the same key within a short window), so a fast double
+    /// press counts like a held key; [`is_repeat`](Self::is_repeat) tells
+    /// them apart where the platform can.
     pub count: u8,
+    /// The platform's auto-repeat of a held key — reported by a terminal
+    /// that speaks the kitty keyboard protocol (event types), or by the GUI
+    /// backend's window system. `false` for a fresh press, and wherever the
+    /// platform cannot say: a terminal without the protocol repeats a held
+    /// key as fresh presses.
+    pub is_repeat: bool,
 }
 
 impl std::fmt::Display for InputEvent {
@@ -27,6 +36,7 @@ impl InputEvent {
             chord,
             pos: Vec2::of(-1.0),
             count: 1,
+            is_repeat: false,
         }
     }
 

@@ -12,7 +12,7 @@ use crate::widget::{clear_path_cache, walk_path_mut};
 
 use crate::ansi::{self, output};
 use crate::ansi::query::{
-    QueryBatch, QueryCellPixelSize, QueryKittyGraphicsSupport, QueryMousePixelMode,
+    QueryBatch, QueryCellPixelSize, QueryKittyGraphicsSupport, QueryKittyKeyboardSupport, QueryMousePixelMode,
     QuerySixelSupport, QueryWindowPixelSize, QueryXtVersion,
 };
 use self::tree::*;
@@ -26,8 +26,16 @@ use std::{
     time::Duration,
 };
 
-/// Kitty keyboard enhancement flags.
-const KBD_FLAGS: u8 = 0b0000_0101;
+/// How soon the same key must follow for tuie to call it an auto-repeat,
+/// where the terminal does not say ([`RuntimeInfo::key_repeats_inferred`]).
+/// Repeat intervals are tens of milliseconds (GNOME's default is 30 ms); two
+/// deliberate presses of one key are much further apart.
+pub const INFERRED_REPEAT_WINDOW: Duration = Duration::from_millis(50);
+
+/// Kitty keyboard enhancement flags: disambiguate escape codes (1), report
+/// event types (2) — a held key's auto-repeat comes marked, and releases,
+/// which the parser drops — and report alternate keys (4).
+const KBD_FLAGS: u8 = 0b0000_0111;
 
 #[cfg(unix)]
 static WAKER: std::sync::OnceLock<(std::os::unix::net::UnixStream, std::os::unix::net::UnixStream)> =
@@ -202,6 +210,16 @@ pub struct RuntimeInfo {
     pub color_scheme: Option<ColorScheme>,
     /// The raw `XTVERSION` response, if the terminal replied.
     pub xtversion: Option<String>,
+    /// Whether [`InputEvent::is_repeat`](crate::widget::input::InputEvent::is_repeat)
+    /// is inferred from timing rather than reported. A terminal without the
+    /// kitty keyboard protocol sends a held key's auto-repeat as fresh
+    /// presses; tuie then calls a key a repeat when the same key follows
+    /// within [`INFERRED_REPEAT_WINDOW`](crate::runtime::INFERRED_REPEAT_WINDOW).
+    /// That catches every repeat but the first, which comes after the
+    /// system's initial delay and looks like a second press — an app that
+    /// must tell that one apart waits that window after a press it would
+    /// act on, and drops the press if a repeat follows.
+    pub key_repeats_inferred: bool,
 }
 
 impl Default for RuntimeInfo {
@@ -212,6 +230,7 @@ impl Default for RuntimeInfo {
             subcell_events: false,
             color_scheme: None,
             xtversion: None,
+            key_repeats_inferred: false,
         }
     }
 }
@@ -1458,6 +1477,7 @@ impl RuntimeContext {
                 let mouse_px_h = batch.add(QueryMousePixelMode);
                 let win_px_h = batch.add(QueryWindowPixelSize);
                 let cell_px_h = batch.add(QueryCellPixelSize);
+                let kitty_keyboard_h = batch.add(QueryKittyKeyboardSupport);
                 #[cfg(feature = "harmonious")]
                 let color_handles = crate::theme::harmonious::add_color_queries(&mut batch);
 
@@ -1474,6 +1494,7 @@ impl RuntimeContext {
                     caps.supports_kitty_graphics = kitty_reply.is_some();
                     caps.supports_kitty_shm = kitty_reply == Some(true);
                     caps.supports_sixel = results.get(&sixel_h).unwrap_or(false);
+                    info.key_repeats_inferred = !results.get(&kitty_keyboard_h).unwrap_or(false);
                     if let Some(px) = results.get(&cell_px_h).unwrap_or(None) {
                         info.cell_size = Some(Vec2::new(px.width, px.height));
                     }
@@ -1531,6 +1552,11 @@ impl RuntimeContext {
             let wake_fd = init_waker()?;
             let mut reader = crate::runtime::event::RuntimeEventReader::new()?;
             reader.set_wake_fd(wake_fd);
+            reader.set_infer_repeats(
+                self.runtime_info
+                    .as_ref()
+                    .is_some_and(|info| info.key_repeats_inferred),
+            );
             EVENT_READER.with_borrow_mut(|r| *r = Some(reader));
             let _ = signals::install(waker_write());
         } else if let Some(info) = self.runtime_info.as_mut() {
@@ -2122,6 +2148,7 @@ impl Runtime {
                                         chord: Chord::new(Trigger::MouseScroll(synth_dir), event.chord.modifiers),
                                         pos: event.pos,
                                         count: 1,
+                                        is_repeat: false,
                                     };
                                     if self.handle_popup_scroll(root, &mut synth, synth_dir).is_none() {
                                         self.handle_scroll(root, &mut synth, synth_dir);
@@ -2153,6 +2180,7 @@ impl Runtime {
                     chord: Chord::new(Trigger::Paste(s), Modifiers::new()),
                     pos: self.mouse_pos,
                     count: 1,
+                    is_repeat: false,
                 };
                 self.enqueue_keyboard(event);
                 return Ok(true);

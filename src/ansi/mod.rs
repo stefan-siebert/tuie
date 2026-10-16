@@ -120,6 +120,11 @@ pub struct MouseInput {
 pub enum ParsedEvent {
     /// A decoded keypress as a [`Chord`].
     Key(Chord),
+    /// A key the terminal says is held: the platform's auto-repeat, as the
+    /// kitty keyboard protocol reports it (flag 2, "report event types").
+    /// A terminal without it repeats a held key as plain [`Key`](Self::Key)
+    /// events, indistinguishable from fresh presses.
+    KeyRepeat(Chord),
     /// A decoded mouse event.
     Mouse(MouseInput),
     /// Terminal resized to the given size in cells.
@@ -144,6 +149,9 @@ pub enum ParsedEvent {
     Color(ColorEntry),
     /// A DEC mode state report.
     DecModeReport { mode: u16, status: u8 },
+    /// The reply to `CSI ? u`: the kitty keyboard protocol flags in effect.
+    /// Only a terminal that speaks the protocol answers at all.
+    KittyKeyboardFlags(u16),
 }
 
 /// Platform handle used to wake a blocked [`Reader`] from another thread.

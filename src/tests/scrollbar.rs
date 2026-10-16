@@ -354,7 +354,7 @@ fn horizontal_click_track_jumps_thumb() {
 }
 
 fn subcell_event(chord: Chord, pos: Vec2<f32>) -> RuntimeEvent {
-    RuntimeEvent::Input(InputEvent { chord, pos, count: 1 })
+    RuntimeEvent::Input(InputEvent { chord, pos, count: 1, is_repeat: false })
 }
 
 fn enable_subcell_events(term: &mut Emulator) {

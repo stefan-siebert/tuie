@@ -282,10 +282,13 @@ impl Parser {
             Some(v) => v,
             None => return,
         };
-        let modifiers = split
+        let (modifiers, kind) = split
             .next()
             .map(modifier_field)
-            .unwrap_or_else(Modifiers::new);
+            .unwrap_or((Modifiers::new(), KeyEventKind::Press));
+        if kind == KeyEventKind::Release {
+            return;
+        }
         let key = match first {
             1 | 7 => Key::Home,
             2 => Key::Insert,
@@ -300,7 +303,7 @@ impl Parser {
             31..=34 => Key::F((first - 14) as u8),
             _ => return,
         };
-        self.push_key(key, modifiers);
+        self.push_key_event(key, modifiers, kind);
     }
 
     fn parse_csi_u(&mut self, body: &[u8]) {
@@ -313,10 +316,13 @@ impl Parser {
             Some(v) => v,
             None => return,
         };
-        let mut modifiers = split
+        let (mut modifiers, kind) = split
             .next()
             .map(modifier_field)
-            .unwrap_or_else(Modifiers::new);
+            .unwrap_or((Modifiers::new(), KeyEventKind::Press));
+        if kind == KeyEventKind::Release {
+            return;
+        }
 
         let mut key = if codepoint >= 57344 {
             match functional_key(codepoint) {
@@ -370,16 +376,19 @@ impl Parser {
                 }
             }
         }
-        self.push_key(key, modifiers);
+        self.push_key_event(key, modifiers, kind);
     }
 
     fn parse_modifier_key(&mut self, body: &[u8], last: u8) {
         let mut split = body.split(|&c| c == b';');
         split.next();
-        let modifiers = split
+        let (modifiers, kind) = split
             .next()
             .map(modifier_field)
-            .unwrap_or_else(Modifiers::new);
+            .unwrap_or((Modifiers::new(), KeyEventKind::Press));
+        if kind == KeyEventKind::Release {
+            return;
+        }
         let key = match last {
             b'A' => Key::Arrow(Direction2D::Up),
             b'B' => Key::Arrow(Direction2D::Down),
@@ -397,7 +406,7 @@ impl Parser {
             b'S' => Key::F(4),
             _ => return,
         };
-        self.push_key(key, modifiers);
+        self.push_key_event(key, modifiers, kind);
     }
 
     fn parse_sgr_mouse(&mut self, body: &[u8], last: u8) {
@@ -535,6 +544,11 @@ impl Parser {
                         .push_back(ParsedEvent::DecModeReport { mode, status: status as u8 });
                 }
             }
+            b'u' => {
+                if let Some(flags) = parse_u16(body) {
+                    self.out.push_back(ParsedEvent::KittyKeyboardFlags(flags));
+                }
+            }
             _ => {}
         }
     }
@@ -643,20 +657,35 @@ impl Parser {
         }
     }
 
-    fn push_key(&mut self, key: Key, mut modifiers: Modifiers) {
-        // Letters carry shiftedness in their case (see `parse_csi_u`), so a
-        // stray Shift bit on them is dropped. Non-letter chars may keep Shift:
-        // it is the only way to express chords like Ctrl+Shift+1, whose
-        // shifted symbol would be keyboard-layout-dependent.
-        if let Key::Char(c) = key
-            && c.is_alphabetic()
-        {
-            modifiers.set(Modifier::Shift, false);
-        }
-        self.out.push_back(ParsedEvent::Key(Chord {
-            trigger: Trigger::Key(key),
-            modifiers,
-        }));
+    /// [`push_key`](Self::push_key) for a key whose event kind the terminal
+    /// reported; a repeat becomes [`ParsedEvent::KeyRepeat`].
+    fn push_key_event(&mut self, key: Key, modifiers: Modifiers, kind: KeyEventKind) {
+        let chord = key_chord(key, modifiers);
+        self.out.push_back(match kind {
+            KeyEventKind::Repeat => ParsedEvent::KeyRepeat(chord),
+            // Every caller drops a release before it gets here.
+            KeyEventKind::Press | KeyEventKind::Release => ParsedEvent::Key(chord),
+        });
+    }
+
+    fn push_key(&mut self, key: Key, modifiers: Modifiers) {
+        self.out.push_back(ParsedEvent::Key(key_chord(key, modifiers)));
+    }
+}
+
+/// The [`Chord`] for `key` with `modifiers`. Letters carry shiftedness in
+/// their case (see `parse_csi_u`), so a stray Shift bit on them is dropped.
+/// Non-letter chars may keep Shift: it is the only way to express chords like
+/// Ctrl+Shift+1, whose shifted symbol would be keyboard-layout-dependent.
+fn key_chord(key: Key, mut modifiers: Modifiers) -> Chord {
+    if let Key::Char(c) = key
+        && c.is_alphabetic()
+    {
+        modifiers.set(Modifier::Shift, false);
+    }
+    Chord {
+        trigger: Trigger::Key(key),
+        modifiers,
     }
 }
 
@@ -676,13 +705,26 @@ fn parse_u32(bytes: &[u8]) -> Option<u32> {
 }
 
 /// Parses a CSI `modifiers` field into [`Modifiers`].
-fn modifier_field(field: &[u8]) -> Modifiers {
-    let mask = field
-        .split(|&c| c == b':')
-        .next()
-        .and_then(parse_u16)
-        .unwrap_or(0);
-    parse_modifiers(mask)
+/// The kitty keyboard protocol's event type (`CSI … ; mods : event …`),
+/// reported with enhancement flag 2. A terminal that does not report it
+/// sends presses only.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum KeyEventKind {
+    Press,
+    Repeat,
+    Release,
+}
+
+/// Decodes a `mods[:event]` field.
+fn modifier_field(field: &[u8]) -> (Modifiers, KeyEventKind) {
+    let mut parts = field.split(|&c| c == b':');
+    let mask = parts.next().and_then(parse_u16).unwrap_or(0);
+    let kind = match parts.next().and_then(parse_u16) {
+        Some(2) => KeyEventKind::Repeat,
+        Some(3) => KeyEventKind::Release,
+        _ => KeyEventKind::Press,
+    };
+    (parse_modifiers(mask), kind)
 }
 
 /// Maps a 1-based xterm modifier mask to [`Modifiers`].

@@ -209,6 +209,50 @@ fn csi_u_shifted_alternate() {
     );
 }
 
+fn key_repeat(k: Key, modifiers: Modifiers) -> ParsedEvent {
+    ParsedEvent::KeyRepeat(Chord { trigger: Trigger::Key(k), modifiers })
+}
+
+/// Kitty keyboard protocol, flag 2 ("report event types"): `:1` is a press
+/// (also the default), `:2` the auto-repeat of a held key, `:3` a release.
+#[test]
+fn kitty_event_types() {
+    // Esc in CSI u form: press, repeat, and the release dropped.
+    assert_eq!(parse_one(b"\x1b[27;1:1u"), key(Key::Esc, no_mods()));
+    assert_eq!(parse_one(b"\x1b[27;1:2u"), key_repeat(Key::Esc, no_mods()));
+    assert_eq!(parse_all(b"\x1b[27;1:3u"), Vec::<ParsedEvent>::new());
+    // Arrows keep their legacy final byte and carry the type in the
+    // modifier field.
+    assert_eq!(
+        parse_one(b"\x1b[1;1:2D"),
+        key_repeat(Key::Arrow(Direction2D::Left), no_mods())
+    );
+    assert_eq!(parse_all(b"\x1b[1;1:3A"), Vec::<ParsedEvent>::new());
+    // The tilde keys and F5+ as well, modifiers intact.
+    assert_eq!(
+        parse_one(b"\x1b[15;5:2~"),
+        key_repeat(Key::F(5), no_mods().with(Modifier::Ctrl))
+    );
+    assert_eq!(parse_all(b"\x1b[15;5:3~"), Vec::<ParsedEvent>::new());
+    // A held Esc reported as press then repeats, released at the end.
+    assert_eq!(
+        parse_all(b"\x1b[27u\x1b[27;1:2u\x1b[27;1:2u\x1b[27;1:3u"),
+        vec![
+            key(Key::Esc, no_mods()),
+            key_repeat(Key::Esc, no_mods()),
+            key_repeat(Key::Esc, no_mods()),
+        ]
+    );
+}
+
+/// The reply to `CSI ? u` — only a terminal that speaks the kitty keyboard
+/// protocol sends one.
+#[test]
+fn kitty_keyboard_flags_reply() {
+    assert_eq!(parse_one(b"\x1b[?0u"), ParsedEvent::KittyKeyboardFlags(0));
+    assert_eq!(parse_one(b"\x1b[?7u"), ParsedEvent::KittyKeyboardFlags(7));
+}
+
 #[test]
 fn csi_u_unsupported_dropped() {
     assert!(parse_all(b"\x1B[57441u").is_empty());

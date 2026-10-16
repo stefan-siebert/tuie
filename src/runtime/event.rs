@@ -53,6 +53,7 @@ impl RuntimeEvent {
             chord,
             pos: pos.map(|v| v as f32 + 0.5),
             count,
+            is_repeat: false,
         })
     }
 }
@@ -90,6 +91,8 @@ pub(crate) struct RuntimeEventReader {
     last_key: Option<Trigger>,
     last_key_time: Instant,
     key_repeat_count: u8,
+    /// The terminal does not report auto-repeat; infer it from timing.
+    infer_repeats: bool,
     reader: ansi::Reader,
 }
 
@@ -107,8 +110,15 @@ impl RuntimeEventReader {
             last_key: None,
             last_key_time: Instant::now(),
             key_repeat_count: 0,
+            infer_repeats: false,
             reader: ansi::Reader::new()?,
         })
+    }
+
+    /// Infer [`InputEvent::is_repeat`] from timing, for a terminal that does
+    /// not report it ([`RuntimeInfo::key_repeats_inferred`](crate::runtime::RuntimeInfo::key_repeats_inferred)).
+    pub(crate) fn set_infer_repeats(&mut self, infer: bool) {
+        self.infer_repeats = infer;
     }
 
     /// Adds the runtime wake handle to the reader's poll set.
@@ -136,11 +146,16 @@ impl RuntimeEventReader {
         }
     }
 
-    fn register_key(&mut self, chord: Chord) -> RuntimeEvent {
+    fn register_key(&mut self, chord: Chord, reported_repeat: bool) -> RuntimeEvent {
         let now = Instant::now();
-        let is_repeat = self.last_key.as_ref() == Some(&chord.trigger)
-            && now.duration_since(self.last_key_time) < Self::REPEAT_WINDOW;
-        if is_repeat {
+        let same_key = self.last_key.as_ref() == Some(&chord.trigger);
+        let since_last = now.duration_since(self.last_key_time);
+        let within_window = same_key && since_last < Self::REPEAT_WINDOW;
+        let is_repeat = reported_repeat
+            || (self.infer_repeats
+                && same_key
+                && since_last < crate::runtime::INFERRED_REPEAT_WINDOW);
+        if within_window {
             self.key_repeat_count = self.key_repeat_count % Self::MAX_REPEAT_COUNT + 1;
         } else {
             self.key_repeat_count = 1;
@@ -151,6 +166,7 @@ impl RuntimeEventReader {
             chord,
             pos: self.pack_pos(),
             count: self.key_repeat_count,
+            is_repeat,
         })
     }
 
@@ -215,13 +231,15 @@ impl RuntimeEventReader {
             chord: Chord::new(trigger, modifiers),
             pos: self.pack_pos(),
             count,
+            is_repeat: false,
         })
     }
 
     fn translate_native(&mut self, event: ansi::ParsedEvent) -> Option<RuntimeEvent> {
         use ansi::ParsedEvent as E;
         match event {
-            E::Key(chord) => Some(self.register_key(chord)),
+            E::Key(chord) => Some(self.register_key(chord, false)),
+            E::KeyRepeat(chord) => Some(self.register_key(chord, true)),
             E::Mouse(m) => Some(self.mouse_event(m.trigger, m.column, m.row, m.modifiers)),
             E::Resize(size) => Some(RuntimeEvent::Resize(size)),
             E::Focus(focused) => Some(RuntimeEvent::Focus(focused)),

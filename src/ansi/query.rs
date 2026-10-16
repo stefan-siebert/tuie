@@ -258,6 +258,32 @@ impl TerminalQuery for QuerySixelSupport {
     }
 }
 
+/// Queries kitty keyboard protocol support (`CSI ? u`). `true` when the
+/// terminal answers — then it reports a held key's auto-repeat itself once
+/// asked to (flag 2, see the runtime's `KBD_FLAGS`).
+#[derive(Clone)]
+pub struct QueryKittyKeyboardSupport;
+
+impl TerminalQuery for QueryKittyKeyboardSupport {
+    type Response = bool;
+
+    fn query_bytes(&self) -> Vec<u8> {
+        b"\x1b[?u".to_vec()
+    }
+
+    fn matches(&self, event: &ParsedEvent) -> bool {
+        matches!(event, ParsedEvent::KittyKeyboardFlags(_))
+    }
+
+    fn extract(&self, event: Option<ParsedEvent>) -> io::Result<bool> {
+        match event {
+            Some(ParsedEvent::KittyKeyboardFlags(_)) => Ok(true),
+            None => Ok(false),
+            _ => unreachable!(),
+        }
+    }
+}
+
 /// Queries the terminal name and version string.
 #[derive(Clone)]
 pub struct QueryXtVersion;
