@@ -82,7 +82,11 @@ impl std::fmt::Display for RuntimeEvent {
     }
 }
 
-pub(crate) struct RuntimeEventReader {
+/// Turns decoded terminal events into [`RuntimeEvent`]s: click counting,
+/// key-repeat counting and inference, mouse position packing. Split from the
+/// reader so events that did not come from the terminal — see
+/// [`crate::inspect::inject`] — take exactly the same path.
+pub(crate) struct EventTranslator {
     last_click: Instant,
     click_pos: Vec2<i32>,
     mouse_pos: Vec2<i32>,
@@ -93,15 +97,61 @@ pub(crate) struct RuntimeEventReader {
     key_repeat_count: u8,
     /// The terminal does not report auto-repeat; infer it from timing.
     infer_repeats: bool,
+}
+
+pub(crate) struct RuntimeEventReader {
+    translator: EventTranslator,
     reader: ansi::Reader,
 }
 
 impl RuntimeEventReader {
+    pub(crate) fn new() -> std::io::Result<Self> {
+        Ok(Self {
+            translator: EventTranslator::new(),
+            reader: ansi::Reader::new()?,
+        })
+    }
+
+    /// Infer [`InputEvent::is_repeat`] from timing, for a terminal that does
+    /// not report it ([`RuntimeInfo::key_repeats_inferred`](crate::runtime::RuntimeInfo::key_repeats_inferred)).
+    pub(crate) fn set_infer_repeats(&mut self, infer: bool) {
+        self.translator.infer_repeats = infer;
+    }
+
+    /// Adds the runtime wake handle to the reader's poll set.
+    pub(crate) fn set_wake_fd(&mut self, fd: WakeHandle) {
+        self.reader.set_wake_fd(fd);
+    }
+
+    /// Waits up to `timeout` for terminal activity and returns all decoded
+    /// events, followed by whatever was injected meanwhile.
+    pub(crate) fn read_batch(
+        &mut self,
+        timeout: Option<Duration>,
+    ) -> std::io::Result<(Vec<RuntimeEvent>, bool)> {
+        loop {
+            let woken = self.reader.wait(timeout)?;
+            let mut out = Vec::new();
+            while let Some(event) = self.reader.try_read() {
+                if let Some(tui_event) = self.translator.translate_native(event) {
+                    out.push(tui_event);
+                }
+            }
+            out.extend(self.translator.translate_injected());
+            coalesce_motion(&mut out);
+            if !out.is_empty() || woken || timeout.is_some() {
+                return Ok((out, woken));
+            }
+        }
+    }
+}
+
+impl EventTranslator {
     pub(crate) const REPEAT_WINDOW: Duration = Duration::from_millis(500);
     pub(crate) const MAX_REPEAT_COUNT: u8 = 240;
 
-    pub(crate) fn new() -> std::io::Result<Self> {
-        Ok(Self {
+    pub(crate) fn new() -> Self {
+        Self {
             last_click: Instant::now(),
             click_pos: Vec2::of(-1),
             mouse_pos: Vec2::of(-1),
@@ -111,39 +161,21 @@ impl RuntimeEventReader {
             last_key_time: Instant::now(),
             key_repeat_count: 0,
             infer_repeats: false,
-            reader: ansi::Reader::new()?,
-        })
+        }
     }
 
-    /// Infer [`InputEvent::is_repeat`] from timing, for a terminal that does
-    /// not report it ([`RuntimeInfo::key_repeats_inferred`](crate::runtime::RuntimeInfo::key_repeats_inferred)).
+    /// Infer [`InputEvent::is_repeat`] from timing; see
+    /// [`RuntimeEventReader::set_infer_repeats`].
     pub(crate) fn set_infer_repeats(&mut self, infer: bool) {
         self.infer_repeats = infer;
     }
 
-    /// Adds the runtime wake handle to the reader's poll set.
-    pub(crate) fn set_wake_fd(&mut self, fd: WakeHandle) {
-        self.reader.set_wake_fd(fd);
-    }
-
-    /// Waits up to `timeout` for terminal activity and returns all decoded events.
-    pub(crate) fn read_batch(
-        &mut self,
-        timeout: Option<Duration>,
-    ) -> std::io::Result<(Vec<RuntimeEvent>, bool)> {
-        loop {
-            let woken = self.reader.wait(timeout)?;
-            let mut out = Vec::new();
-            while let Some(event) = self.reader.try_read() {
-                if let Some(tui_event) = self.translate_native(event) {
-                    out.push(tui_event);
-                }
-            }
-            coalesce_motion(&mut out);
-            if !out.is_empty() || woken || timeout.is_some() {
-                return Ok((out, woken));
-            }
-        }
+    /// Translates every event queued by [`crate::inspect::inject`].
+    pub(crate) fn translate_injected(&mut self) -> Vec<RuntimeEvent> {
+        crate::inspect::take_injected()
+            .into_iter()
+            .filter_map(|event| self.translate_native(event))
+            .collect()
     }
 
     fn register_key(&mut self, chord: Chord, reported_repeat: bool) -> RuntimeEvent {

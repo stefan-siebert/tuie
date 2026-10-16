@@ -663,10 +663,10 @@ impl ApplicationHandler for GuiState {
                         let now = std::time::Instant::now();
                         let is_multi = self.click_pos == self.mouse_cell
                             && now.duration_since(self.last_click)
-                                < crate::runtime::event::RuntimeEventReader::REPEAT_WINDOW;
+                                < crate::runtime::event::EventTranslator::REPEAT_WINDOW;
                         if is_multi {
                             self.click_count = self.click_count
-                                % crate::runtime::event::RuntimeEventReader::MAX_REPEAT_COUNT
+                                % crate::runtime::event::EventTranslator::MAX_REPEAT_COUNT
                                 + 1;
                         } else {
                             self.click_count = 1;

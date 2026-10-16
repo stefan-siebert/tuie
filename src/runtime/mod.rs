@@ -436,6 +436,35 @@ pub fn send<W: Widget + ?Sized, M: std::any::Any + Send>(id: WidgetId<W>, msg: M
     wake();
 }
 
+/// Whether no [`send`] message is waiting for the next tick.
+pub(crate) fn inbox_is_empty() -> bool {
+    INBOX.lock().map(|inbox| inbox.is_empty()).unwrap_or(false)
+}
+
+/// Whether the runtime holds keys back to complete a multi-key chord.
+/// `None` while the runtime is borrowed, i.e. in the middle of a tick.
+pub(crate) fn key_queue_pending() -> Option<bool> {
+    RUNTIME
+        .try_with(|rt| rt.try_borrow().ok().map(|rt| rt.key_queue_deadline.is_some()))
+        .ok()
+        .flatten()
+}
+
+/// Runs `f` with the content of every open popup, bottom first. `None` while
+/// the runtime is borrowed, i.e. in the middle of a tick.
+pub(crate) fn with_popup_contents<R>(f: impl FnOnce(&[&dyn Widget]) -> R) -> Option<R> {
+    RUNTIME
+        .try_with(|rt| {
+            rt.try_borrow().ok().map(|rt| {
+                let contents: Vec<&dyn Widget> =
+                    rt.popups.iter().map(|popup| &*popup.content).collect();
+                f(&contents)
+            })
+        })
+        .ok()
+        .flatten()
+}
+
 fn drain_inbox(root: &mut dyn Widget) {
     loop {
         let messages = std::mem::take(&mut *INBOX.lock().unwrap());
@@ -469,7 +498,7 @@ fn drain_inbox(root: &mut dyn Widget) {
     }
 }
 
-fn wake() {
+pub(crate) fn wake() {
     #[cfg(feature = "gui")]
     if let Some(p) = EVENT_LOOP_PROXY.get() {
         let _ = p.send_event(());
@@ -598,7 +627,7 @@ fn set_dirty(dirty: DirtyImpact) {
     });
 }
 
-fn get_dirty() -> DirtyImpact {
+pub(crate) fn get_dirty() -> DirtyImpact {
     with_ctx(|ctx| ctx.dirty)
 }
 
@@ -1136,6 +1165,13 @@ pub(crate) fn update(
         }
     }
 
+    crate::inspect::run_after_update(root);
+    if get_dirty() != DirtyImpact::None {
+        // An after-update callback changed something; paint it without
+        // waiting for the next event.
+        wake();
+    }
+
     Ok(next_timeout)
 }
 
@@ -1202,6 +1238,7 @@ fn run_terminal(root: &mut dyn Widget) -> std::io::Result<u8> {
 
 /// Resets the runtime to a clean state for an in-process emulator at `size`.
 pub(crate) fn init_emulator(size: Vec2<u16>) {
+    crate::inspect::reset();
     RUNTIME.with_borrow_mut(|rt| *rt = Runtime::new());
     with_ctx_mut(|ctx| *ctx = RuntimeContext::new());
     with_ctx_mut(|ctx| {

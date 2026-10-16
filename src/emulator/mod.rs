@@ -77,7 +77,10 @@ impl SessionLock {
 /// [`SessionLock`]); emulator-driven tests on parallel threads run one at
 /// a time instead of corrupting each other through the runtime's global
 /// message inbox.
-pub struct Emulator(());
+pub struct Emulator {
+    /// Stands in for the terminal reader's translation of injected events.
+    translator: crate::runtime::event::EventTranslator,
+}
 
 impl Emulator {
     /// Creates an [`Emulator`] with `root` rendered at `size`.
@@ -85,7 +88,23 @@ impl Emulator {
         EMULATOR_SESSION.acquire();
         crate::runtime::init_emulator(size);
         let _ = crate::runtime::update(root, &[RuntimeEvent::Resize(size)]);
-        Self(())
+        Self {
+            translator: crate::runtime::event::EventTranslator::new(),
+        }
+    }
+
+    /// Reads what [`crate::inspect::inject`] queued, translated the way the
+    /// terminal reader translates it, and processes it through the runtime.
+    /// Also runs a tick when nothing was queued, which is what a wake does.
+    pub fn pump_injected(&mut self, root: &mut dyn Widget) {
+        let events = self.translator.translate_injected();
+        let _ = crate::runtime::update(root, &events);
+    }
+
+    /// Infer key repeats from timing, as for a terminal without the kitty
+    /// keyboard protocol ([`RuntimeInfo::key_repeats_inferred`]).
+    pub fn set_infer_repeats(&mut self, infer: bool) {
+        self.translator.set_infer_repeats(infer);
     }
 
     /// Processes `events` through the runtime.

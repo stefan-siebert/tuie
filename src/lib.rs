@@ -12,6 +12,7 @@ pub mod emulator;
 #[cfg(feature = "gui")]
 pub mod gui;
 pub mod input;
+pub mod inspect;
 pub mod render;
 pub mod runtime;
 pub mod theme;

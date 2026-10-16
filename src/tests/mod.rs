@@ -7,6 +7,7 @@ mod color;
 mod focus;
 mod grid;
 mod input;
+mod inspect;
 #[cfg(feature = "harmonious")]
 mod lab;
 mod list;
