@@ -49,6 +49,9 @@ pub enum Injected {
     },
     /// A bracketed paste.
     Paste(String),
+    /// The terminal changed size, in cells. Only meaningful headless
+    /// ([`crate::runtime::start_headless`]); a real terminal reports its own.
+    Resize(Vec2<u16>),
 }
 
 impl Injected {
@@ -68,6 +71,7 @@ impl Injected {
                 modifiers,
             }),
             Injected::Paste(text) => ParsedEvent::Paste(text),
+            Injected::Resize(size) => ParsedEvent::Resize(size),
         }
     }
 }
@@ -297,4 +301,10 @@ fn describe_widget(
         popup,
         children,
     })
+}
+
+/// Whether the runtime runs without a terminal
+/// ([`crate::runtime::start_headless`]).
+pub fn is_headless() -> bool {
+    crate::runtime::is_headless()
 }

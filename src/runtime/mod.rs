@@ -1236,6 +1236,122 @@ fn run_terminal(root: &mut dyn Widget) -> std::io::Result<u8> {
     result
 }
 
+/// Set by [`start_headless`]; read through [`crate::inspect::is_headless`].
+static HEADLESS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub(crate) fn is_headless() -> bool {
+    HEADLESS.load(Ordering::Acquire)
+}
+
+/// Runs the runtime with no terminal at all and returns the exit code: frames
+/// are laid out and rendered at `size` into memory, and the only input is
+/// what [`crate::inspect::inject`] queues. For an in-app inspector driving
+/// the app where no terminal can be had — an agent's background process,
+/// Windows without tmux.
+///
+/// What a terminal would tell it, it does not know: there is no capability
+/// query, so no image protocol, and repeats count as reported
+/// ([`RuntimeInfo::key_repeats_inferred`] is false — an injected
+/// [`Injected::KeyRepeat`](crate::inspect::Injected::KeyRepeat) is a repeat).
+/// The size changes only through an injected
+/// [`Injected::Resize`](crate::inspect::Injected::Resize).
+pub fn start_headless(
+    root: Box<dyn Widget>,
+    size: Vec2<u16>,
+) -> std::io::Result<std::process::ExitCode> {
+    HEADLESS.store(true, Ordering::Release);
+    // Not `init_emulator`: that resets the whole context, and with it what
+    // the app registered before starting — quit handlers, the spawner.
+    with_ctx_mut(|ctx| {
+        ctx.mode = Mode::Tui;
+        // Marks the runtime as enabled, so `update` never sets up a terminal.
+        *ctx.panic_hook.lock().unwrap() = Some(Box::new(|_| {}));
+        ctx.runtime_info = Some(RuntimeInfo { size, ..Default::default() });
+        ctx.image_caps = ImageCaps::default();
+    });
+    set_output(std::io::sink());
+    let wake = init_waker()?;
+    signals::install(waker_write())?;
+    let mut translator = crate::runtime::event::EventTranslator::new();
+    let mut root = root;
+    let mut events = vec![RuntimeEvent::Resize(size)];
+    loop {
+        if let Some(code) = events.iter().find_map(|event| match event {
+            RuntimeEvent::Quit(code) => Some(*code),
+            _ => None,
+        }) {
+            run_quit_handlers();
+            return Ok(std::process::ExitCode::from(code));
+        }
+        // Nothing to suspend: there is no terminal to hand back.
+        events.retain(|event| !matches!(event, RuntimeEvent::Suspend));
+        let timeout = update(&mut *root, &events)?;
+        events = read_headless(&mut translator, wake, timeout)?;
+    }
+}
+
+/// The headless loop's `read`: control flags, then — after waiting for the
+/// wake handle up to `timeout` — whatever was injected.
+fn read_headless(
+    translator: &mut crate::runtime::event::EventTranslator,
+    wake: crate::ansi::WakeHandle,
+    timeout: Option<Duration>,
+) -> std::io::Result<Vec<RuntimeEvent>> {
+    let mut out = drain_control();
+    if out.is_empty() && !crate::inspect::has_pending_injection() {
+        wait_for_wake(wake, timeout)?;
+    }
+    out.append(&mut drain_control());
+    out.extend(translator.translate_injected());
+    Ok(out)
+}
+
+#[cfg(unix)]
+fn wait_for_wake(wake: crate::ansi::WakeHandle, timeout: Option<Duration>) -> std::io::Result<()> {
+    let millis = timeout.map_or(-1, |timeout| {
+        i32::try_from(timeout.as_millis()).unwrap_or(i32::MAX)
+    });
+    let mut poll = libc::pollfd {
+        fd: wake,
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    // SAFETY: one valid pollfd on the stack, count 1.
+    let result = unsafe { libc::poll(&mut poll, 1, millis) };
+    if result < 0 {
+        let error = std::io::Error::last_os_error();
+        if error.kind() != std::io::ErrorKind::Interrupted {
+            return Err(error);
+        }
+    }
+    // Empty the pipe: the bytes only say "wake up", the flags say why.
+    let mut buffer = [0u8; 64];
+    loop {
+        // SAFETY: reading into a valid stack buffer from the non-blocking
+        // wake pipe.
+        let read = unsafe {
+            libc::read(wake, buffer.as_mut_ptr() as *mut libc::c_void, buffer.len())
+        };
+        if read <= 0 {
+            return Ok(());
+        }
+    }
+}
+
+#[cfg(windows)]
+fn wait_for_wake(wake: crate::ansi::WakeHandle, timeout: Option<Duration>) -> std::io::Result<()> {
+    use windows_sys::Win32::System::Threading::{INFINITE, WaitForSingleObject};
+    let millis = timeout.map_or(INFINITE, |timeout| {
+        u32::try_from(timeout.as_millis()).unwrap_or(INFINITE - 1)
+    });
+    // SAFETY: waiting on the runtime's own auto-reset event, which resets
+    // itself on return.
+    unsafe {
+        WaitForSingleObject(wake as _, millis);
+    }
+    Ok(())
+}
+
 /// Resets the runtime to a clean state for an in-process emulator at `size`.
 pub(crate) fn init_emulator(size: Vec2<u16>) {
     crate::inspect::reset();

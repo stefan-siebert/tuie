@@ -230,3 +230,16 @@ fn text_in_counts_a_wide_glyph_as_two_cells() {
     let whole = inspect::text_in(Rect::new(Vec2::new(0, 0), Vec2::new(6, 1)));
     assert_eq!(whole, vec!["ab界cd".to_string()]);
 }
+
+#[test]
+fn an_injected_resize_changes_the_runtime_size() {
+    let mut root = Pane::new().vertical().child(Text::new().content("x"));
+    let mut term = Emulator::new(&mut *root, Vec2::new(40, 10));
+    assert!(!inspect::is_headless());
+
+    inspect::inject([Injected::Resize(Vec2::new(30, 8))]);
+    term.pump_injected(&mut *root);
+
+    assert_eq!(tuie::get_runtime_info().size, Vec2::new(30, 8));
+    assert_eq!(term.get_snapshot_text().lines().count(), 8);
+}
