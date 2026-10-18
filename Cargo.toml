@@ -26,6 +26,7 @@ winit = { version = "0.30", optional = true }
 wgpu = { version = "23", optional = true }
 pollster = { version = "0.4", optional = true }
 fontdb = { version = "0.23", optional = true }
+ab_glyph = { version = "0.2", default-features = false, features = ["std"], optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 freetype-rs = { version = "0.38", optional = true }
@@ -49,6 +50,10 @@ windows-sys = { version = "0.60", features = [
 [features]
 harmonious = []
 images = ["dep:image"]
+# `inspect::screenshot`: the last painted frame as pixels, for an inspector
+# whose agent wants to see colours and images. System fonts through fontdb,
+# rasterized by ab_glyph (pure Rust, unlike the GUI's freetype).
+screenshot = ["images", "dep:fontdb", "dep:ab_glyph"]
 gui = ["harmonious", "dep:winit", "dep:wgpu", "dep:pollster", "dep:fontdb", "dep:freetype-rs", "dep:objc2"]
 
 [dev-dependencies]

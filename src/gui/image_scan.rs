@@ -103,7 +103,7 @@ impl PlaceholderScanner {
             .cell_size
             .unwrap_or(Vec2::new(1u16, 1u16));
 
-        let uv_rect = Self::compute_uv_rect(
+        let uv_rect = kitty::placement_uv_rect(
             img_dims,
             cell_px,
             placement_size,
@@ -121,47 +121,6 @@ impl PlaceholderScanner {
         });
     }
 
-    fn compute_uv_rect(
-        img: Vec2<u32>,
-        cell_px: Vec2<u16>,
-        placement: Option<Vec2<u16>>,
-        img_col_start: u32,
-        img_row_start: u32,
-        cells_w: u32,
-        cells_h: u32,
-    ) -> [f32; 4] {
-        if img.x == 0 || img.y == 0 {
-            return [0.0, 0.0, 1.0, 1.0];
-        }
-        let cw = cell_px.x.max(1) as f64;
-        let ch = cell_px.y.max(1) as f64;
-        let pl = placement.unwrap_or_else(|| {
-            let nx = ((img.x as f64 / cw).round().max(1.0)) as u16;
-            let ny = ((img.y as f64 / ch).round().max(1.0)) as u16;
-            Vec2::new(nx, ny)
-        });
-        let pl_w = (pl.x as f64).max(1.0);
-        let pl_h = (pl.y as f64).max(1.0);
-
-        let src_aspect = (img.x as f64) / (img.y as f64);
-        let box_aspect = (pl_w * cw) / (pl_h * ch);
-        let (vis_w, vis_h) = if src_aspect >= box_aspect {
-            (1.0, box_aspect / src_aspect)
-        } else {
-            (src_aspect / box_aspect, 1.0)
-        };
-        let vis_x0 = (1.0 - vis_w) * 0.5;
-        let vis_y0 = (1.0 - vis_h) * 0.5;
-
-        let bx0 = (img_col_start as f64) / pl_w;
-        let by0 = (img_row_start as f64) / pl_h;
-        let bx1 = ((img_col_start + cells_w) as f64) / pl_w;
-        let by1 = ((img_row_start + cells_h) as f64) / pl_h;
-
-        let to_u = |bx: f64| ((bx - vis_x0) / vis_w).clamp(0.0, 1.0) as f32;
-        let to_v = |by: f64| ((by - vis_y0) / vis_h).clamp(0.0, 1.0) as f32;
-        [to_u(bx0), to_v(by0), to_u(bx1), to_v(by1)]
-    }
 }
 
 impl PlaceholderScanner {

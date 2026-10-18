@@ -107,7 +107,7 @@ impl SourceInner {
         self.data.get_pixel_dims()
     }
 
-    #[cfg(feature = "gui")]
+    #[cfg(any(feature = "gui", feature = "screenshot"))]
     pub(crate) fn get_rgba(self: &Rc<Self>) -> Option<Rc<Vec<u8>>> {
         let dims = self.get_pixel_dims();
         self.with_kitty_cache(|cache| {
@@ -151,7 +151,7 @@ impl SourceInner {
     }
 }
 
-#[cfg(feature = "gui")]
+#[cfg(any(feature = "gui", feature = "screenshot"))]
 fn decode_to_rgba(data: &SourceData) -> Option<Vec<u8>> {
     match data {
         SourceData::Raw { width, height, pixels, format } => match format {

@@ -1266,7 +1266,14 @@ pub fn start_headless(
         ctx.mode = Mode::Tui;
         // Marks the runtime as enabled, so `update` never sets up a terminal.
         *ctx.panic_hook.lock().unwrap() = Some(Box::new(|_| {}));
-        ctx.runtime_info = Some(RuntimeInfo { size, ..Default::default() });
+        // No terminal to ask for its cell size. With screenshots built in,
+        // the cells are the screenshot's, so images are fitted to what is
+        // painted.
+        #[cfg(feature = "screenshot")]
+        let cell_size = crate::render::screenshot::cell_size().ok();
+        #[cfg(not(feature = "screenshot"))]
+        let cell_size = None;
+        ctx.runtime_info = Some(RuntimeInfo { size, cell_size, ..Default::default() });
         ctx.image_caps = ImageCaps::default();
     });
     set_output(std::io::sink());
@@ -1370,6 +1377,12 @@ pub(crate) fn init_emulator(size: Vec2<u16>) {
 /// Returns the most recently rendered frame as a [`crate::render::style::StyledString`] snapshot.
 pub(crate) fn get_emulator_snapshot() -> crate::render::style::StyledString {
     with_ctx(|ctx| ctx.renderer.get_snapshot())
+}
+
+/// The most recently rendered frame painted to pixels (`inspect::screenshot`).
+#[cfg(feature = "screenshot")]
+pub(crate) fn paint_screenshot(fitted_cell: Vec2<u16>) -> Result<image::RgbaImage, String> {
+    with_ctx(|ctx| crate::render::screenshot::paint(&ctx.renderer, fitted_cell))
 }
 
 /// The text of the most recently rendered frame inside `rect`, row by row.

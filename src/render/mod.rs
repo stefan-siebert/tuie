@@ -5,6 +5,8 @@ pub mod color;
 pub mod cursor;
 #[cfg(feature = "images")]
 pub mod image;
+#[cfg(feature = "screenshot")]
+pub(crate) mod screenshot;
 pub mod style;
 pub mod underline;
 
@@ -1175,6 +1177,37 @@ impl GridRenderer {
             rows.push(row);
         }
         rows
+    }
+
+    /// Visits every cell of the most recently flushed frame: position, glyph,
+    /// style and whether it is wide. What [`get_snapshot`](Self::get_snapshot)
+    /// reads, with the raw cell style instead of a [`Style`].
+    #[cfg(feature = "screenshot")]
+    pub(crate) fn for_each_flushed_cell(
+        &self,
+        mut f: impl FnMut(u16, u16, &str, &GridCellStyle, bool),
+    ) {
+        let cells = &self.state.cells.1;
+        let graphemes = &self.state.graphemes.1;
+        let size = self.state.size;
+        let stride = self.state.cells_stride as usize;
+        for y in 0..size.y {
+            let mut x = 0u16;
+            while x < size.x {
+                let Some(cell) = cells.get(usize::from(y) * stride + usize::from(x)) else {
+                    break;
+                };
+                let wide = cell.flags.get(GridCellFlags::WIDE);
+                f(x, y, cell.glyph(graphemes), &cell.style, wide);
+                x += if wide { 2 } else { 1 };
+            }
+        }
+    }
+
+    /// The size of the most recently flushed frame, in cells.
+    #[cfg(feature = "screenshot")]
+    pub(crate) fn flushed_size(&self) -> Vec2<u16> {
+        self.state.size
     }
 
     /// Returns the most recently flushed frame as a [`StyledString`].

@@ -162,6 +162,66 @@ pub fn screen() -> StyledString {
     crate::runtime::get_emulator_snapshot()
 }
 
+/// The last painted frame as a PNG, as [`screenshot`] returns it.
+#[cfg(feature = "screenshot")]
+#[derive(Clone, Debug)]
+#[non_exhaustive]
+pub struct Screenshot {
+    /// The encoded image.
+    pub png: Vec<u8>,
+    /// Width in pixels.
+    pub width: u32,
+    /// Height in pixels.
+    pub height: u32,
+    /// Pixels per cell before any downscaling.
+    pub cell_px: Vec2<u16>,
+    /// Set when the image was downscaled to fit `max_width`.
+    pub scale: Option<f32>,
+}
+
+/// The last painted frame in pixels: cell backgrounds, glyphs from the
+/// system's monospace font (Nerd Font symbols from a fallback), underlines,
+/// and the images kitty placeholders stand for. `rect` crops it to cells;
+/// `max_width` downscales until the image is at most that wide (0: never).
+///
+/// Not what a terminal shows to the pixel: the terminal's own font, its
+/// palette for the 16 ANSI colours and Sixel images are not known here.
+#[cfg(feature = "screenshot")]
+pub fn screenshot(rect: Option<Rect<i32, u16>>, max_width: u32) -> Result<Screenshot, String> {
+    let fitted_cell = crate::get_runtime_info().cell_size.unwrap_or(Vec2::new(1, 2));
+    let mut image = crate::runtime::paint_screenshot(fitted_cell)?;
+    let cell = crate::render::screenshot::cell_size()?;
+    if let Some(rect) = rect {
+        let cell_w = u32::from(cell.x);
+        let cell_h = u32::from(cell.y);
+        let x = u32::try_from(rect.pos.x.max(0)).unwrap_or(0) * cell_w;
+        let y = u32::try_from(rect.pos.y.max(0)).unwrap_or(0) * cell_h;
+        let width = (u32::from(rect.size.x) * cell_w).min(image.width().saturating_sub(x));
+        let height = (u32::from(rect.size.y) * cell_h).min(image.height().saturating_sub(y));
+        if width == 0 || height == 0 {
+            return Err("the element is not on screen".into());
+        }
+        image = image::imageops::crop_imm(&image, x, y, width, height).to_image();
+    }
+    let mut scale = None;
+    if max_width > 0 && image.width() > max_width {
+        let factor = max_width as f32 / image.width() as f32;
+        let height = ((image.height() as f32 * factor).round() as u32).max(1);
+        image = image::imageops::resize(
+            &image,
+            max_width,
+            height,
+            image::imageops::FilterType::Triangle,
+        );
+        scale = Some(factor);
+    }
+    let mut png = Vec::new();
+    image
+        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .map_err(|error| format!("encoding the screenshot failed: {error}"))?;
+    Ok(Screenshot { width: image.width(), height: image.height(), png, cell_px: cell, scale })
+}
+
 /// The terminal cursor of the last painted frame, if it was shown.
 pub fn cursor() -> Option<(CursorShape, Vec2<i32>)> {
     crate::runtime::get_emulator_cursor()
