@@ -126,12 +126,15 @@ pub(crate) fn pick_protocol() -> ImageProtocol {
         return forced;
     }
     let caps = crate::runtime::get_image_caps();
-    if crate::is_gui() {
+    // Kitty before Sixel where a terminal speaks both (WezTerm, Konsole):
+    // a Kitty image is transmitted once and then placed by Unicode
+    // placeholders, so a screen of many small images — an icon grid — costs
+    // nothing per frame, where Sixel sends every image again whenever its
+    // cells are redrawn.
+    if crate::is_gui() || caps.supports_kitty_graphics {
         ImageProtocol::Kitty
     } else if caps.supports_sixel {
         ImageProtocol::Sixel
-    } else if caps.supports_kitty_graphics {
-        ImageProtocol::Kitty
     } else {
         ImageProtocol::HalfBlock
     }
