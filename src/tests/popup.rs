@@ -149,3 +149,50 @@ fn scheduled_timer_fires_on_popup_hosted_widget() {
         "a schedule() whose target lives in a popup must fire on that widget"
     );
 }
+
+// ── send() into a popup opened in the same tick ──────────────────────────────
+
+struct Fill(&'static str);
+
+/// Popup content that records the [`Fill`] messages it receives.
+struct InboxProbe {
+    root: Box<Pane>,
+    received: Rc<RefCell<Vec<&'static str>>>,
+}
+
+impl DelegateWidget for InboxProbe {
+    crate::delegate_widget!(root);
+
+    fn after_on_event(&mut self, event: &mut WidgetEvent) {
+        if let Some(Fill(text)) = event.take::<Fill>() {
+            self.received.borrow_mut().push(text);
+        }
+    }
+}
+
+#[test]
+fn a_message_sent_to_a_popup_opened_in_the_same_tick_arrives() {
+    // Regression: open_popup only queues the popup, and the queue is drained
+    // after the inbox. A host that opens a popup and forwards a message into
+    // it in one tick — Elane's TUI opening a plugin dialog and passing on the
+    // plugin's first update — had the message dropped: drain_inbox found
+    // the target neither in the tree nor among the mounted popups.
+    let mut root = Pane::new().vertical().flex(1).child(Text::new().content("background"));
+    let mut term = Emulator::new(&mut *root, Vec2::new(80, 24));
+
+    let received = Rc::new(RefCell::new(Vec::new()));
+    let mut probe_id = WidgetId::EMPTY;
+    let content = Box::new(InboxProbe {
+        root: Pane::new().vertical().min_width(20).min_height(5),
+        received: received.clone(),
+    })
+    .id(&mut probe_id);
+    crate::open_popup(Popup::new(content as Box<dyn Widget>).dismissible_if(false));
+    crate::send(probe_id, Fill("first"));
+
+    term.update(&mut *root, &[]);
+    crate::send(probe_id, Fill("second"));
+    term.update(&mut *root, &[]);
+
+    assert_eq!(*received.borrow(), ["first", "second"]);
+}

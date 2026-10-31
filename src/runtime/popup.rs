@@ -164,6 +164,34 @@ pub fn dismiss_popup(id: WidgetId<impl ?Sized>) {
     POPUP_QUEUES.with_borrow_mut(|q| q.dismiss.push(id.untyped()));
 }
 
+/// Delivers a [`send`](crate::send) message to `target` inside a popup that
+/// was opened but is not mounted yet: [`open_popup`] only queues it, and the
+/// queue is drained after the inbox. A host that opens a popup and forwards a
+/// message into it in the same tick (Elane: a plugin dialog and its first
+/// update) would otherwise lose the message. Returns the payload when no
+/// queued popup holds `target`.
+pub(crate) fn deliver_to_opening(
+    target: WidgetId,
+    payload: Box<dyn std::any::Any>,
+) -> Option<Box<dyn std::any::Any>> {
+    // Taken out for the call: the widget may open a popup itself, which
+    // would borrow the queue again.
+    let mut opening = POPUP_QUEUES.with_borrow_mut(|q| std::mem::take(&mut q.open));
+    let rest = match opening.iter_mut().find_map(|p| p.content.find_mut(target)) {
+        Some(widget) => {
+            widget.on_event(&mut WidgetEvent::new(target, payload));
+            None
+        }
+        None => Some(payload),
+    };
+    POPUP_QUEUES.with_borrow_mut(|q| {
+        // Anything opened meanwhile goes after what was queued before.
+        opening.append(&mut q.open);
+        q.open = opening;
+    });
+    rest
+}
+
 pub(crate) fn drain_open_requests() -> Vec<Popup> {
     POPUP_QUEUES.with_borrow_mut(|q| std::mem::take(&mut q.open))
 }

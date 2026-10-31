@@ -483,16 +483,22 @@ fn drain_inbox(root: &mut dyn Widget) {
                 // search. Safe to dispatch while borrowing the runtime: widget
                 // callbacks reach the runtime only through the separate
                 // `RUNTIME_CTX` / popup / inbox queues, never `with_runtime_mut`.
-                with_runtime_mut(|rt| {
+                let undelivered = with_runtime_mut(|rt| {
                     let index =
                         rt.popups.iter_mut().position(|p| p.content.find_mut(target).is_some());
-                    if let Some(i) = index {
-                        if let Some(widget) = rt.popups[i].content.find_mut(target) {
+                    match index.and_then(|i| rt.popups[i].content.find_mut(target)) {
+                        Some(widget) => {
                             let mut event = WidgetEvent::new(target, payload);
                             widget.on_event(&mut event);
+                            None
                         }
+                        None => Some(payload),
                     }
                 });
+                // Or in a popup opened this tick and not mounted yet.
+                if let Some(payload) = undelivered {
+                    let _ = deliver_to_opening(target, payload);
+                }
             }
         }
     }
