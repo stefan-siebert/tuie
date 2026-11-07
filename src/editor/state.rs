@@ -145,7 +145,13 @@ impl<T: TextDocument> EditorState<T> {
     /// Applies `affinity` after a motion, updating the wrap bias and preferred column.
     pub fn update(&mut self, text: &T, affinity: Affinity) {
         if self.cursor.at_eof(text) {
+            // The end of the text has one place on screen: the end of its
+            // last row. A motion that ends here still sets the column a
+            // vertical move returns to, or Up would go to a stale one.
             self.bias = Sign::Negative;
+            if affinity != Affinity::Column {
+                self.preferred_col = self.cursor.get_virtual_pos(text, self.bias).x;
+            }
             return;
         }
         match affinity {
