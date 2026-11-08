@@ -3110,10 +3110,17 @@ impl Runtime {
             let content_id = popup.content.get_id();
             log::debug!("popup opened: id={:?}", content_id);
             let active = crate::runtime::popup::ActivePopup::from_popup(popup, saved);
+            let initial = active.content.get_initial_focus();
             let mut path = vec![content_id];
             find_focusable_1d(&*active.content, &[], Sign::Positive, &mut path);
             self.popups.push(active);
             self.finish_focus_move(root, None, Some(path));
+            // After the default, not instead of it: a target the content
+            // does not hold (or that cannot take focus) leaves the first
+            // focusable focused, as before.
+            if let Some(initial) = initial {
+                self.process_focus_request(root, initial, false);
+            }
             dirty_layout();
         }
         for id in crate::runtime::popup::drain_dismiss_requests() {

@@ -1017,6 +1017,11 @@ pub trait DelegateWidget: 'static {
         self.get_delegate().get_focus_target()
     }
 
+    /// Override hook for [`Widget::get_initial_focus`].
+    fn override_get_initial_focus(&self) -> Option<WidgetId> {
+        self.get_delegate().get_initial_focus()
+    }
+
     /// Override hook for [`Widget::on_input`].
     fn override_on_input(&mut self, queue: &mut InputQueue) -> InputResult {
         self.get_delegate_mut().on_input(queue)
@@ -1236,6 +1241,10 @@ impl<T: DelegateWidget> Widget for T {
         } else {
             self.override_get_focus_target()
         }
+    }
+
+    fn get_initial_focus(&self) -> Option<WidgetId> {
+        self.override_get_initial_focus()
     }
 
     fn on_input(&mut self, queue: &mut InputQueue) -> InputResult {
@@ -1540,6 +1549,17 @@ pub trait Widget: std::any::Any {
 
     /// Returns the id of the widget that receives focus.
     fn get_focus_target(&self) -> Option<WidgetId> {
+        None
+    }
+
+    /// The widget that takes focus when this widget is mounted as a
+    /// [`Popup`](crate::Popup)'s content, in place of the first focusable in
+    /// tab order. Applied the moment the popup is mounted, so a key that
+    /// arrives before the popup's first layout already finds it focused — a
+    /// `focus_widget` from `before_layout` takes effect only at the layout
+    /// after that, and an Enter in between activated whatever came first
+    /// (a checkbox, in Elane's conflict dialog).
+    fn get_initial_focus(&self) -> Option<WidgetId> {
         None
     }
 

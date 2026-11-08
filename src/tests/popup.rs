@@ -196,3 +196,113 @@ fn a_message_sent_to_a_popup_opened_in_the_same_tick_arrives() {
 
     assert_eq!(*received.borrow(), ["first", "second"]);
 }
+
+// ── initial focus of a popup ─────────────────────────────────────────────────
+
+/// A focusable leaf that records the keys it is given.
+struct KeyProbe {
+    root: Box<Pane>,
+    name: &'static str,
+    keys: Rc<RefCell<Vec<&'static str>>>,
+}
+
+impl DelegateWidget for KeyProbe {
+    crate::delegate_widget!(root);
+
+    fn override_is_focusable(&self) -> bool {
+        true
+    }
+
+    fn override_on_input(&mut self, queue: &mut InputQueue) -> InputResult {
+        if queue.next().is_some() {
+            self.keys.borrow_mut().push(self.name);
+            return InputResult::Handled;
+        }
+        InputResult::Rejected
+    }
+}
+
+/// Popup content with two focusable probes; it asks for the second.
+struct InitialFocusProbe {
+    root: Box<Pane>,
+    initial: WidgetId,
+}
+
+impl DelegateWidget for InitialFocusProbe {
+    crate::delegate_widget!(root);
+
+    fn override_get_initial_focus(&self) -> Option<WidgetId> {
+        Some(self.initial)
+    }
+}
+
+fn key(c: char) -> RuntimeEvent {
+    RuntimeEvent::Input(InputEvent {
+        chord: Chord::new(Trigger::Key(Key::Char(c)), Modifiers::new()),
+        pos: Vec2::of(0.0),
+        count: 1,
+        is_repeat: false,
+    })
+}
+
+#[test]
+fn a_popup_mounts_with_its_initial_focus_before_its_first_layout() {
+    // Regression: a dialog that focused its default button from
+    // `after_before_layout` got it only at the layout after the first one;
+    // a key in between went to the first focusable. Elane's TUI conflict
+    // dialog: an Enter that came early toggled "apply to all" instead of
+    // pressing Overwrite, and the dialog stayed open.
+    let mut root = Pane::new().vertical().flex(1).child(Text::new().content("background"));
+    let mut term = Emulator::new(&mut *root, Vec2::new(80, 24));
+
+    let keys = Rc::new(RefCell::new(Vec::new()));
+    let mut first_id = WidgetId::EMPTY;
+    let mut second_id = WidgetId::EMPTY;
+    let probe = |name| KeyProbe {
+        root: Pane::new().min_width(4).min_height(1),
+        name,
+        keys: keys.clone(),
+    };
+    let content = Box::new(InitialFocusProbe {
+        root: Pane::new()
+            .vertical()
+            .min_width(20)
+            .min_height(5)
+            .child(Box::new(probe("first")).id(&mut first_id))
+            .child(Box::new(probe("second")).id(&mut second_id)),
+        // Fields are evaluated in order: `root` above has set the id.
+        initial: second_id.untyped(),
+    });
+    crate::open_popup(Popup::new(content as Box<dyn Widget>).dismissible_if(false));
+
+    // Mounted at the end of the first update; the key comes at the start
+    // of the second, before that update lays anything out.
+    term.update(&mut *root, &[]);
+    assert_eq!(crate::get_focused_widget(), Some(second_id.untyped()));
+    term.update(&mut *root, &[key('x')]);
+
+    assert_eq!(*keys.borrow(), ["second"]);
+}
+
+#[test]
+fn a_popup_without_an_initial_focus_focuses_its_first_focusable() {
+    let mut root = Pane::new().vertical().flex(1).child(Text::new().content("background"));
+    let mut term = Emulator::new(&mut *root, Vec2::new(80, 24));
+
+    let keys = Rc::new(RefCell::new(Vec::new()));
+    let content = Pane::new()
+        .vertical()
+        .min_width(20)
+        .min_height(5)
+        .child(Box::new(KeyProbe {
+            root: Pane::new().min_width(4).min_height(1),
+            name: "first",
+            keys: keys.clone(),
+        }));
+    crate::open_popup(Popup::new(content as Box<dyn Widget>).dismissible_if(false));
+
+    term.update(&mut *root, &[]);
+    term.update(&mut *root, &[key('x')]);
+
+    assert_eq!(*keys.borrow(), ["first"]);
+}
