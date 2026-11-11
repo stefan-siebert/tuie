@@ -165,6 +165,25 @@ fn focus_chain_says_when_a_popup_has_the_focus() {
     assert_eq!(chain.names.first().copied(), Some("FocusableCard"));
 }
 
+#[test]
+fn a_widget_in_a_popup_can_be_read() {
+    let seen = Seen::default();
+    let mut root = Recorder::new(seen);
+    let mut term = Emulator::new(&mut root, Vec2::new(40, 10));
+    let card = Box::new(FocusableCard {
+        root: Pane::new().vertical().min_width(12).min_height(3),
+    });
+    let card_id = card.get_id();
+    assert_eq!(inspect::with_popup_widget(card_id, |_| ()), None);
+    tuie::open_popup(Popup::new(card as Box<dyn Widget>).placement(Placement::center()));
+    term.update(&mut root, &[]);
+    let width = inspect::with_popup_widget(card_id, |card| card.root.get_rect_size().x);
+    assert_eq!(width, Some(12));
+    tuie::close_popup(card_id);
+    term.update(&mut root, &[]);
+    assert_eq!(inspect::with_popup_widget(card_id, |_| ()), None);
+}
+
 fn find<'a>(
     elements: &'a [inspect::ElementInfo],
     test_id: &str,

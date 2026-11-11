@@ -243,6 +243,19 @@ pub fn open_popups() -> Option<usize> {
     crate::runtime::with_popup_contents(|contents| contents.len())
 }
 
+/// Reads widget `id` inside an open popup, for an inspector's state of
+/// what a dialog shows (the main tree has `get_widget`). `None` when no
+/// open popup holds it, or in the middle of a tick.
+pub fn with_popup_widget<T: Widget, R>(id: WidgetId<T>, f: impl FnOnce(&T) -> R) -> Option<R> {
+    crate::runtime::with_popup_contents(|contents| {
+        contents
+            .iter()
+            .find_map(|content| content.get_widget(id))
+            .map(f)
+    })
+    .flatten()
+}
+
 /// Where the focus is: the focus chain from the outermost widget to the
 /// focused one, as each widget's [`Widget::get_name`], and whether it runs
 /// through an open popup — a popup that has focus is the active root, and
